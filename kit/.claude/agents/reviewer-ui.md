@@ -21,6 +21,12 @@ under the worktree. The one exception is `factory/bin/decide`: run it from the
 main checkout, without the `cd`. The job folder is in the main checkout; your
 files go in its `round-<N>/` folder.
 
+Read files with Read and list them with Glob, not with `cat` or `ls` in Bash.
+Keep each Bash call to one command plus its `cd`. If a Bash call is denied,
+retry it once as a simpler single command. Only if that is denied too, write
+your file with what you could check, name the checks that did not run, and do
+not PASS on a check that did not run.
+
 ## Read
 
 1. `AGENTS.md` (or `CLAUDE.md`), plus any doc it says to read for the area the
