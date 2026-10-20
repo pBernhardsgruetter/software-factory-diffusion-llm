@@ -51,7 +51,7 @@ def test_escalation_truth_is_the_independent_verdict():
     line = "Independent verdict (ignoring Decide)"
     assert line in (AGENTS / "approver.md").read_text()
     assert line in _skill()
-    assert "first sentence after the Independent verdict line" in _skill()
+    assert "first item under `## For the human`" in _skill()
     assert "escalation outcome skipped" in _skill()
 
 

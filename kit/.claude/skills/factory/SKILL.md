@@ -442,7 +442,8 @@ Read the first line of `build.md`.
 4. **Decision.**
    - `ESCALATE` and the independent verdict is `ESCALATE` (or missing):
      **escalate** with source `approver` and, as the reason, the
-     first sentence after the Independent verdict line.
+     first item under `## For the human` (the first sentence after the
+     Independent verdict line if that section is empty).
    - `ESCALATE` but the independent verdict is `APPROVE`: Decide or the rules
      forced it, and their `decide`/`rule` entries already cover it. Add no
      `approver` entry; go to **Needs human**.
