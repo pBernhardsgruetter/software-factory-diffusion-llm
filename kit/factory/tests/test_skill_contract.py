@@ -95,3 +95,16 @@ def test_fast_tier_allowlist_block_promotes():
         assert phrase in gate, phrase
     for role in ("fast-builder", "fast-fixer"):
         assert "decide failure" not in (FAST_AGENTS / f"{role}.md").read_text()
+
+
+def test_readme_covers_usage_and_security_model():
+    readme = KIT.parent / "README.md"
+    if not readme.is_file():  # an installed copy of the kit has no repo README
+        return
+    text = readme.read_text()
+    for phrase in ("scripts/install.sh", "--force", ".factory-backup-", "/factory next",
+                   "/factory approve", "/factory rework", "`main` branch", "OPENROUTER_API_KEY",
+                   "decide report", "python3 -m http.server 8765", "## Costs",
+                   "## Security model: guardrail, not a sandbox", "pi", "## End-to-end results",
+                   "unsupported", "risk categories"):
+        assert phrase in text, phrase
