@@ -32,8 +32,8 @@ _CLEAN = re.compile(r"^[$({`\"']+|[)}`\"';]+$")
 # A revision: no leading ``^`` (zsh extendedglob negation); trailing ``^`` only
 # (``HEAD^``, ``HEAD^^``), which is literal in zsh.
 _REV = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*\^*")
-# Two deny scans around substitutions / subshells / brace groups; a command is
-# denied if EITHER fires (each is one linear ``str.translate`` + scan):
+# Three deny scans around substitutions / subshells / brace groups; a command is
+# denied if ANY fires (each is one linear ``str.translate`` + scan):
 # - _SUBST: delimiters become command separators, so the contents of ``$(...)``,
 #   backticks and ``(...)`` are scanned as commands of their own (this also
 #   reaches into ``-m`` messages).
@@ -42,10 +42,15 @@ _REV = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*\^*")
 #   ``$`` becomes a space too, so an expansion glued to a word end
 #   (``git push$(true)``, ``git reset --hard${x}``, ``sh$x``) leaves the bare
 #   word. Scan B keeps ``$``, so ``rm -rf $HOME`` / ``${HOME}`` still deny.
+# - _SUBST_KEEP: like _SUBST_WS but ``$`` is KEPT (``${`` first becomes ``$``),
+#   so a variable stays whole in the outer command although a substitution,
+#   subshell or brace group sits next to it (``rm -rf $(true) $HOME``,
+#   ``rm -rf ${x}$HOME``, ``rm -rf ($HOME)``, ``rm -rf $(true) ${HOME}``).
 _SUBST = str.maketrans({"`": ";", "(": ";", ")": ";"})
 _SUBST_WS = str.maketrans(
     {"`": " ", "(": " ", ")": " ", "{": " ", "}": " ", "$": " "}
 )
+_SUBST_KEEP = str.maketrans({"`": " ", "(": " ", ")": " ", "{": " ", "}": " "})
 # Control characters (everything below 0x20 except TAB and LF, plus DEL). zsh
 # keeps them as literal word characters; they are never part of an allowed
 # command.
@@ -252,8 +257,10 @@ class Policy:
         # 2. Deny first, on shell-tokenised text (quotes and escapes removed).
         #    Over-long input uses a cheap plain split; it is rejected below anyway.
         plain = len(cmd) > _MAX_CMD
-        if self._denied(cmd.translate(_SUBST_WS), plain) or self._denied(
-            cmd.translate(_SUBST), plain
+        if (
+            self._denied(cmd.translate(_SUBST_WS), plain)
+            or self._denied(cmd.translate(_SUBST), plain)
+            or self._denied(cmd.replace("${", "$").translate(_SUBST_KEEP), plain)
         ):
             return "deny"
         # 3. Only short, simple commands without control characters can be allowed.

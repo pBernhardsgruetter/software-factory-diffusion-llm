@@ -552,3 +552,32 @@ def test_r5_substitution_glued_to_word_end_denied(policy, cmd):
 ])
 def test_r5_dollar_mapping_preserves(policy, cmd, expected):
     assert policy.classify_command(cmd, WT) == expected
+
+
+# ------------------------------------------------------- final review (I2)
+
+@pytest.mark.parametrize("cmd", [
+    "rm -rf $(true) $HOME", "rm -rf ${x}$HOME", "rm -rf ($HOME)",
+    "rm -rf `true` $HOME", "rm -rf {$HOME}", "rm -rf $(true) ${HOME}",
+    "rm -fr ( $HOME )", "cd x && rm -rf $(true) $HOME",
+])
+def test_i2_third_scan_keeps_dollar(policy, cmd):
+    assert policy.classify_command(cmd, WT) == "deny"
+
+
+@pytest.mark.parametrize("cmd,expected", [
+    ('git commit -m "fix (bug)"', "allow"), ("git status", "allow"),
+    ("rm -rf $(true) build", "unknown"), ("rm -rf (build)", "unknown"),
+])
+def test_i2_third_scan_does_not_overreach(policy, cmd, expected):
+    assert policy.classify_command(cmd, WT) == expected
+
+
+@pytest.mark.parametrize("cmd", [
+    "rm -rf $(true) $HOME " * 5000, "rm -rf ${x}$HOME " * 5000, "rm -rf ($HOME) " * 5000,
+    "(" * 100000, "{" * 100000,
+], ids=lambda c: f"{c[:12]!r}x{len(c)}")
+def test_i2_third_scan_linear(policy, cmd):
+    t = time.perf_counter()
+    assert policy.classify_command(cmd, WT) in ("deny", "unknown")
+    assert time.perf_counter() - t < 0.5
