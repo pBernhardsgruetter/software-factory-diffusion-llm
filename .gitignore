@@ -2,3 +2,4 @@ zazencodes-season-3/
 kit/factory/.venv/
 __pycache__/
 .pytest_cache/
+spikes/s2-repo*/
