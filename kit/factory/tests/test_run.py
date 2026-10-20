@@ -178,7 +178,8 @@ def test_escalation_rule_hits_deduplicated(tmp_path):
     answers = {**ESC_CLEAN, "auth": b(0.99)}
     rec = run_decision("escalation", root=root, job=job,
                        state={"rule_hits": ["a.env", "infra/x.tf"]}, post=Stub(answers))
-    assert rec["route"]["reasons"] == ["a.env", "infra/x.tf", "auth"]
+    # the logged route is Decide's own opinion; the rules force apply only (I8a)
+    assert rec["route"] == {"escalate": True, "reasons": ["auth"]}
     assert rec["apply"] == {"escalate": True, "reasons": ["a.env", "infra/x.tf", "auth"]}
 
 
@@ -192,7 +193,7 @@ def test_escalation_non_list_rule_hits_coerced(tmp_path, hits, expected):
     rec = run_decision("escalation", root=root, job=job, state={"rule_hits": hits},
                        post=Stub(ESC_CLEAN))
     assert rec["apply"] == {"escalate": True, "reasons": expected}
-    assert rec["route"]["reasons"] == expected
+    assert rec["route"] == {"escalate": False, "reasons": []}
 
 
 @pytest.mark.parametrize("hits", [None, "", [], ()])
@@ -403,3 +404,19 @@ def test_error_message_scrubs_key(tmp_path):
     rec = run_decision("triage", root=root, job=job, state={"feature": "x"},
                        post=Stub(exc=RuntimeError("bad header test-key-not-real")))
     assert "test-key-not-real" not in rec["error"] and "[REDACTED]" in rec["error"]
+
+
+# ------------------------------------------------------- final review (I8a)
+
+
+@pytest.mark.parametrize("mode", ["shadow", "active"])
+def test_i8_escalation_route_is_decides_own_opinion(tmp_path, mode):
+    root, job = make_root(tmp_path, modes={"escalation": mode})
+    rec = run_decision("escalation", root=root, job=job,
+                       state={"rule_hits": ["src/auth/login.ts"], "diff": ""},
+                       post=Stub(ESC_CLEAN))
+    assert rec["route"] == {"escalate": False, "reasons": []}
+    assert rec["apply"] == {"escalate": True, "reasons": ["src/auth/login.ts"]}
+    logged = json.loads((job.folder / "decisions.jsonl").read_text().splitlines()[-1])
+    assert logged["route"] == {"escalate": False, "reasons": []}
+    assert logged["apply"]["escalate"] is True

@@ -5,7 +5,9 @@ Decide -> banding -> route -> ``apply``. System 1 may only speed things up when
 it is confident, or add an escalation; it never overrides the heavy models. In
 shadow mode (any mode other than exactly ``"active"``) and on any error,
 ``apply`` is the template fallback, i.e. the original factory behaviour. The
-route is still computed and logged so shadow runs can be calibrated.
+route is still computed and logged so shadow runs can be calibrated. For
+``escalation`` the logged route ignores the deterministic rule hits (it is
+Decide's own opinion); ``apply`` is still forced to escalate by them.
 """
 
 from __future__ import annotations
@@ -293,8 +295,12 @@ def run_decision(
         if state_error and STATE_BUILD_FAILED not in hits:
             hits.append(STATE_BUILD_FAILED)
     rstate = {**state, "rule_hits": hits} if name == "escalation" else state
+    # Calibration honesty: the LOGGED route is Decide's own opinion, so for
+    # ``escalation`` it is computed without the rule hits. The rules still
+    # force ``apply`` below, in every mode.
+    ostate = {**state, "rule_hits": []} if name == "escalation" else state
     try:
-        route = ROUTES[name](banded, rstate)
+        route = ROUTES[name](banded, ostate)
     except Exception as exc:
         route, error = None, error or _err(exc)
 

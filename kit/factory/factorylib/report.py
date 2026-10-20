@@ -16,12 +16,18 @@ by the orchestrator) and computes, per decision name:
   escalates and the route does not. 0 for the other decisions.
 * ``unpaired_outcomes``: latest outcomes per (job, decision) that found no eligible
   preceding decision (none logged, or the latest one errored).
-* ``pairing``: ``"supported"``, or ``"unsupported"`` for ``toolgate``: its decisions
-  live in ``tool-gate.jsonl`` with no job and nothing records outcomes for them, so
-  it never pairs, ``unsafe_misses`` is ``None`` (unknown, not 0) and ``ready`` is
-  always False. Its ``cases`` and ``coverage`` still count.
-* ``ready``: ``cases >= min_cases`` and ``paired >= min_cases`` (the target is
-  cases *with outcomes*) and ``agreement >= 0.95`` and ``unsafe_misses == 0``.
+* ``pairing``: ``"supported"`` (``triage``, ``escalation``, ``stuck``, ``finding``,
+  ``failure``), or ``"unsupported"`` for the decisions this factory records no
+  (or only one-sided) ground truth for: ``assumptions``, ``clarify``, ``promote``,
+  ``rereview``, ``toolgate``, ``visual``. An unsupported decision is never
+  ``ready``; its ``cases``, ``coverage`` and any pairs still count. ``toolgate``
+  additionally never pairs (its decisions live in ``tool-gate.jsonl`` with no
+  job) and its ``unsafe_misses`` is ``None`` (unknown, not 0).
+* ``ready``: ``pairing == "supported"`` and ``cases >= min_cases`` and
+  ``paired >= min_cases`` (the target is cases *with outcomes*) and
+  ``agreement >= 0.95`` and ``unsafe_misses == 0``. It measures agreement on the
+  keys the outcomes record only: for ``triage`` that is ``risks`` (the approver's
+  categories), never the tier or the reviewers (``note`` says so).
 
 Pairing: per (job, decision) the LATEST outcome by ``ts`` wins (human overrides come
 later) and is paired once with the latest decision of that name in that job that
@@ -44,6 +50,9 @@ from pathlib import Path
 AGREEMENT_TARGET = (95, 100)  # compared in integers: 19/20 must pass, never 0.9499999
 UNSAFE_DECISIONS = ("triage", "escalation")
 UNPAIRABLE_DECISIONS = ("toolgate",)  # no outcome source exists (controller ruling R26)
+# No (or only one-sided) outcome source in this factory: never ``ready`` (final review I8).
+UNSUPPORTED_DECISIONS = ("assumptions", "clarify", "promote", "rereview", "toolgate", "visual")
+NOTES = {"triage": "ready measures risks only"}
 _ESCALATING_PERMISSIONS = ("ask", "deny")
 _MISSING = object()
 
@@ -165,18 +174,20 @@ def build_report(root: Path, min_cases: int = 20) -> dict[str, dict]:
         unsafe = (sum(_escalates(truth) and not _escalates(route) for truth, route in named)
                   if name in UNSAFE_DECISIONS else 0)
         n_agree_ok = bool(named) and agree * AGREEMENT_TARGET[1] >= AGREEMENT_TARGET[0] * len(named)
-        unsupported = name in UNPAIRABLE_DECISIONS
+        unsupported = name in UNSUPPORTED_DECISIONS
         report[name] = {
             "cases": len(recs),
             "paired": len(named),
             "unpaired_outcomes": unpaired.get(name, 0),
             "coverage": len(confident) / len(denom) if denom else None,
             "agreement": agree / len(named) if named else None,
-            "unsafe_misses": None if unsupported else unsafe,
+            "unsafe_misses": None if name in UNPAIRABLE_DECISIONS else unsafe,
             "pairing": "unsupported" if unsupported else "supported",
             "ready": (not unsupported and len(recs) >= min_cases and len(named) >= min_cases
                       and n_agree_ok and unsafe == 0),
         }
+        if name in NOTES:
+            report[name]["note"] = NOTES[name]
     report["skipped_lines"] = skipped
     return report
 
@@ -200,6 +211,8 @@ def format_report(report: dict, min_cases: int = 20) -> str:
         lines.append("(no decisions logged)")
     lines.append(f"ready needs: >= {min_cases} cases with outcomes, >= 95% agreement, "
                  "0 unsafe misses (triage, escalation)")
-    lines.append("toolgate: no outcome source; stays shadow")
+    lines.append("unsupported (no outcome source, stay shadow): "
+                 + ", ".join(UNSUPPORTED_DECISIONS))
+    lines.extend(f"{n}: {note}" for n, note in NOTES.items())
     lines.append(f"skipped_lines: {report.get('skipped_lines', 0)}")
     return "\n".join(lines)

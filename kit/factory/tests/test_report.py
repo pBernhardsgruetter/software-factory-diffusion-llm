@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from factorylib.report import build_report, format_report
 
 
@@ -25,19 +27,19 @@ def t(n):
 
 def test_agreement_and_coverage(tmp_path):
     write(tmp_path, "j1", [
-        dec("promote", {"promote": True}, ts=t(1)),
-        out("promote", {"promote": True}, ts=t(2)),
+        dec("failure", {"failure": True}, ts=t(1)),
+        out("failure", {"failure": True}, ts=t(2)),
     ])
     write(tmp_path, "j2", [
-        dec("promote", {"promote": False}, ts=t(1), band="uncertain"),
-        out("promote", {"promote": True}, ts=t(2), job="j2"),
+        dec("failure", {"failure": False}, ts=t(1), band="uncertain"),
+        out("failure", {"failure": True}, ts=t(2), job="j2"),
     ])
     write(tmp_path, "j3", [
-        dec("promote", {"promote": True}, ts=t(1)),
-        dec("promote", {"promote": True}, ts=t(3)),
-        out("promote", {"promote": True}, ts=t(4), job="j3"),
+        dec("failure", {"failure": True}, ts=t(1)),
+        dec("failure", {"failure": True}, ts=t(3)),
+        out("failure", {"failure": True}, ts=t(4), job="j3"),
     ])
-    r = build_report(tmp_path)["promote"]
+    r = build_report(tmp_path)["failure"]
     assert r["cases"] == 4 and r["paired"] == 3
     assert r["coverage"] == 0.75
     assert abs(r["agreement"] - 2 / 3) < 1e-9
@@ -77,67 +79,67 @@ def test_unsafe_misses_only_for_risk_decisions(tmp_path):
 def test_ready_at_threshold(tmp_path):
     for i in range(20):
         job = f"j{i}"
-        route = {"promote": True} if i else {"promote": False}
-        write(tmp_path, job, [dec("promote", route, ts=t(1)),
-                              out("promote", {"promote": True}, ts=t(2), job=job)])
-    r = build_report(tmp_path)["promote"]
+        route = {"failure": True} if i else {"failure": False}
+        write(tmp_path, job, [dec("failure", route, ts=t(1)),
+                              out("failure", {"failure": True}, ts=t(2), job=job)])
+    r = build_report(tmp_path)["failure"]
     assert r["cases"] == 20 and r["agreement"] == 0.95 and r["ready"] is True
-    assert build_report(tmp_path, min_cases=21)["promote"]["ready"] is False
+    assert build_report(tmp_path, min_cases=21)["failure"]["ready"] is False
 
 
 def test_just_below_agreement_threshold(tmp_path):
     for i in range(20):
         job = f"j{i}"
-        route = {"promote": i > 1}
-        write(tmp_path, job, [dec("promote", route, ts=t(1)),
-                              out("promote", {"promote": True}, ts=t(2), job=job)])
-    assert build_report(tmp_path)["promote"]["ready"] is False
+        route = {"failure": i > 1}
+        write(tmp_path, job, [dec("failure", route, ts=t(1)),
+                              out("failure", {"failure": True}, ts=t(2), job=job)])
+    assert build_report(tmp_path)["failure"]["ready"] is False
 
 
 def test_outcome_without_decision_ignored(tmp_path):
-    write(tmp_path, "j1", [out("promote", {"promote": True}, ts=t(2)),
+    write(tmp_path, "j1", [out("failure", {"failure": True}, ts=t(2)),
                            dec("stuck", {"escalate": False}, ts=t(1))])
     rep = build_report(tmp_path)
-    assert "promote" not in rep or rep["promote"]["paired"] == 0
+    assert "failure" not in rep or rep["failure"]["paired"] == 0
     assert rep["stuck"]["paired"] == 0 and rep["stuck"]["agreement"] is None
 
 
 def test_outcome_pairs_only_preceding_decision(tmp_path):
-    write(tmp_path, "j1", [dec("promote", {"promote": True}, ts=t(5)),
-                           out("promote", {"promote": True}, ts=t(2))])
-    assert build_report(tmp_path)["promote"]["paired"] == 0
+    write(tmp_path, "j1", [dec("failure", {"failure": True}, ts=t(5)),
+                           out("failure", {"failure": True}, ts=t(2))])
+    assert build_report(tmp_path)["failure"]["paired"] == 0
 
 
 def test_latest_outcome_supersedes(tmp_path):
     write(tmp_path, "j1", [
-        dec("promote", {"promote": True}, ts=t(1)),
-        out("promote", {"promote": False}, ts=t(2)),
-        out("promote", {"promote": True}, ts=t(3)),
+        dec("failure", {"failure": True}, ts=t(1)),
+        out("failure", {"failure": False}, ts=t(2)),
+        out("failure", {"failure": True}, ts=t(3)),
     ])
-    r = build_report(tmp_path)["promote"]
+    r = build_report(tmp_path)["failure"]
     assert r["paired"] == 1 and r["agreement"] == 1.0
 
 
 def test_latest_preceding_decision_used(tmp_path):
     write(tmp_path, "j1", [
-        dec("promote", {"promote": False}, ts=t(1)),
-        dec("promote", {"promote": True}, ts=t(2)),
-        out("promote", {"promote": True}, ts=t(3)),
+        dec("failure", {"failure": False}, ts=t(1)),
+        dec("failure", {"failure": True}, ts=t(2)),
+        out("failure", {"failure": True}, ts=t(3)),
     ])
-    r = build_report(tmp_path)["promote"]
+    r = build_report(tmp_path)["failure"]
     assert r["cases"] == 2 and r["paired"] == 1 and r["agreement"] == 1.0
 
 
 def test_error_records_not_paired_and_not_confident(tmp_path):
     write(tmp_path, "j1", [
-        dec("promote", None, ts=t(1), band="uncertain", model=None, error="boom"),
-        out("promote", {"promote": True}, ts=t(2)),
+        dec("failure", None, ts=t(1), band="uncertain", model=None, error="boom"),
+        out("failure", {"failure": True}, ts=t(2)),
     ])
-    write(tmp_path, "j2", [dec("promote", {"promote": True}, ts=t(1), error="late failure"),
-                           out("promote", {"promote": True}, ts=t(2), job="j2")])
-    write(tmp_path, "j3", [dec("promote", {"promote": True}, ts=t(1)),
-                           out("promote", {"promote": True}, ts=t(2), job="j3")])
-    r = build_report(tmp_path)["promote"]
+    write(tmp_path, "j2", [dec("failure", {"failure": True}, ts=t(1), error="late failure"),
+                           out("failure", {"failure": True}, ts=t(2), job="j2")])
+    write(tmp_path, "j3", [dec("failure", {"failure": True}, ts=t(1)),
+                           out("failure", {"failure": True}, ts=t(2), job="j3")])
+    r = build_report(tmp_path)["failure"]
     assert r["cases"] == 3 and r["paired"] == 1
     assert abs(r["coverage"] - 1 / 3) < 1e-9
     assert r["agreement"] == 1.0
@@ -214,26 +216,26 @@ def test_other_decisions_pairing_supported(tmp_path):
 
 def test_outcome_with_bad_ts_counted_as_skipped(tmp_path):
     write(tmp_path, "j1", [
-        dec("promote", {"promote": True}, ts=t(1)),
-        {"kind": "outcome", "decision": "promote", "truth": {"promote": True}},
-        {"kind": "outcome", "decision": "promote", "truth": {"promote": True}, "ts": "nope"},
+        dec("failure", {"failure": True}, ts=t(1)),
+        {"kind": "outcome", "decision": "failure", "truth": {"failure": True}},
+        {"kind": "outcome", "decision": "failure", "truth": {"failure": True}, "ts": "nope"},
     ])
     rep = build_report(tmp_path)
-    assert rep["skipped_lines"] == 2 and rep["promote"]["paired"] == 0
+    assert rep["skipped_lines"] == 2 and rep["failure"]["paired"] == 0
 
 
 def test_unpaired_outcomes_counted(tmp_path):
     write(tmp_path, "j1", [  # latest decision errored: outcome unpaired
-        dec("promote", {"promote": True}, ts=t(1)),
-        dec("promote", None, ts=t(2), band="uncertain", model=None, error="boom"),
-        out("promote", {"promote": True}, ts=t(3)),
+        dec("failure", {"failure": True}, ts=t(1)),
+        dec("failure", None, ts=t(2), band="uncertain", model=None, error="boom"),
+        out("failure", {"failure": True}, ts=t(3)),
     ])
-    write(tmp_path, "j2", [out("promote", {"promote": True}, ts=t(3), job="j2")])  # no decision
-    write(tmp_path, "j3", [dec("promote", {"promote": True}, ts=t(1)),
-                           out("promote", {"promote": True}, ts=t(2), job="j3")])
+    write(tmp_path, "j2", [out("failure", {"failure": True}, ts=t(3), job="j2")])  # no decision
+    write(tmp_path, "j3", [dec("failure", {"failure": True}, ts=t(1)),
+                           out("failure", {"failure": True}, ts=t(2), job="j3")])
     write(tmp_path, "j4", [out("stuck", {"escalate": True}, ts=t(3), job="j4")])
     rep = build_report(tmp_path)
-    assert rep["promote"]["paired"] == 1 and rep["promote"]["unpaired_outcomes"] == 2
+    assert rep["failure"]["paired"] == 1 and rep["failure"]["unpaired_outcomes"] == 2
     assert rep["stuck"]["cases"] == 0 and rep["stuck"]["unpaired_outcomes"] == 1
 
 
@@ -241,26 +243,27 @@ def test_text_table_unpaired_na_and_footnote(tmp_path):
     (tmp_path / "factory").mkdir(parents=True)
     (tmp_path / "factory" / "tool-gate.jsonl").write_text(
         json.dumps(dec("toolgate", {"permission": "allow"}, ts=t(1))) + "\n")
-    write(tmp_path, "j1", [dec("promote", {"promote": True}, ts=t(1)),
-                           out("promote", {"promote": False}, ts=t(2))])
+    write(tmp_path, "j1", [dec("failure", {"failure": True}, ts=t(1)),
+                           out("failure", {"failure": False}, ts=t(2))])
     text = format_report(build_report(tmp_path))
     lines = text.splitlines()
     assert "unpaired" in lines[0].split()
     row = next(ln for ln in lines if ln.startswith("toolgate"))
     assert "n/a" in row.split()
-    assert "toolgate: no outcome source; stays shadow" in lines
+    assert any(ln.startswith("unsupported (no outcome source") and "toolgate" in ln
+               for ln in lines)
     assert lines[-1].startswith("skipped_lines:")
 
 
 def test_corrupt_lines_skipped_and_counted(tmp_path):
-    write(tmp_path, "j1", [dec("promote", {"promote": True}, ts=t(1)),
-                           out("promote", {"promote": True}, ts=t(2))],
+    write(tmp_path, "j1", [dec("failure", {"failure": True}, ts=t(1)),
+                           out("failure", {"failure": True}, ts=t(2))],
           raw_lines=['{"kind": "decision", "dec', "not json", "[1, 2]", '{"kind": "mystery"}'])
     (tmp_path / "factory").mkdir(exist_ok=True)
     (tmp_path / "factory" / "tool-gate.jsonl").write_text("garbage\n")
     rep = build_report(tmp_path)
     assert rep["skipped_lines"] == 5
-    assert rep["promote"]["cases"] == 1 and rep["promote"]["agreement"] == 1.0
+    assert rep["failure"]["cases"] == 1 and rep["failure"]["agreement"] == 1.0
 
 
 def test_empty_root(tmp_path):
@@ -269,15 +272,15 @@ def test_empty_root(tmp_path):
 
 def test_malformed_records_do_not_crash(tmp_path):
     write(tmp_path, "j1", [
-        {"kind": "decision", "decision": "promote", "band": "confident", "model": "m",
+        {"kind": "decision", "decision": "failure", "band": "confident", "model": "m",
          "route": "not a dict", "error": None, "ts": t(1)},
-        {"kind": "decision", "decision": "promote", "ts": "not a time", "route": {"promote": True},
+        {"kind": "decision", "decision": "failure", "ts": "not a time", "route": {"failure": True},
          "band": "confident", "model": "m", "error": None},
-        {"kind": "outcome", "decision": "promote", "truth": "nope", "ts": t(2)},
-        {"kind": "outcome", "decision": "promote", "truth": {"promote": True}, "ts": 5},
+        {"kind": "outcome", "decision": "failure", "truth": "nope", "ts": t(2)},
+        {"kind": "outcome", "decision": "failure", "truth": {"failure": True}, "ts": 5},
     ])
     rep = build_report(tmp_path)
-    assert rep["promote"]["paired"] == 0
+    assert rep["failure"]["paired"] == 0
 
 
 def test_i7_gate_audit_lines_are_not_skipped(tmp_path):
@@ -289,3 +292,32 @@ def test_i7_gate_audit_lines_are_not_skipped(tmp_path):
         + "\n" + json.dumps({**gate, "decision": "toolgate"}) + "\n")
     rep = build_report(tmp_path)
     assert rep["skipped_lines"] == 0 and rep["toolgate"]["cases"] == 1
+
+
+# ------------------------------------------------------- final review (I8b)
+
+UNSUPPORTED = ("assumptions", "clarify", "promote", "rereview", "toolgate", "visual")
+SUPPORTED = ("triage", "escalation", "stuck", "finding", "failure")
+
+
+@pytest.mark.parametrize("name", UNSUPPORTED + SUPPORTED)
+def test_i8_pairing_support_and_ready(tmp_path, name):
+    for i in range(25):
+        job = f"j{i}"
+        write(tmp_path, job, [dec(name, {"x": True}, ts=t(1)),
+                              out(name, {"x": True}, ts=t(2), job=job)])
+    r = build_report(tmp_path)[name]
+    if name in UNSUPPORTED:
+        assert r["pairing"] == "unsupported" and r["ready"] is False
+    else:
+        assert r["pairing"] == "supported" and r["ready"] is True
+    assert r["cases"] == 25
+
+
+def test_i8_text_explains_ready(tmp_path):
+    write(tmp_path, "j1", [dec("triage", {"tier": "fast", "risks": []}, ts=t(1))])
+    text = format_report(build_report(tmp_path))
+    assert "triage: ready measures risks only" in text
+    assert ("unsupported (no outcome source, stay shadow): assumptions, clarify, promote, "
+            "rereview, toolgate, visual") in text
+    assert build_report(tmp_path)["triage"]["note"] == "ready measures risks only"
