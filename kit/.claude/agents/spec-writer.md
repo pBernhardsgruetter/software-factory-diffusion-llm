@@ -24,6 +24,9 @@ worktree. The job folder is in the main checkout; your one file goes there.
 2. Any doc AGENTS.md says to read before touching the area this feature lives in.
 3. The code the feature touches, in the worktree. Find the real files and
    components; don't guess at names.
+4. `<job folder>/attachments/`, if it exists: mockups or images attached to the
+   feature, with transcriptions in `<job folder>/attachments.md` if present.
+   Look at each image.
 
 ## Write spec.md
 
@@ -43,7 +46,9 @@ Numbered list of what must be true when the work is done.
 Numbered list. Each criterion is one observable behaviour plus how to verify it:
 a command to run, a page and what it should show, or a file that should contain
 something. The builder tests against this list and the approver checks it, so
-every item must be checkable by someone who only has the repo.
+every item must be checkable by someone who only has the repo. For each visual
+criterion, name the attachment it is checked against and the width, e.g.
+"matches attachments/login-mockup.png at desktop width".
 
 ## Out of scope
 What a reasonable builder might be tempted to do but must not.

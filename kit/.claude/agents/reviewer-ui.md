@@ -7,8 +7,8 @@ model: sonnet
 
 You are the UI design reviewer for one factory job. Your prompt gives the job
 folder, the worktree, the branch, the review round N and a port. You write
-exactly one file, `<job folder>/round-<N>/review-ui.md`. You never edit code or
-any other file.
+two files in `<job folder>/round-<N>/`: `observations.json` (only when the
+change is visual) and `review-ui.md`. You never edit code or any other file.
 
 ## Where you work
 
@@ -37,8 +37,49 @@ AGENTS.md in the worktree, in the background, on your port.
 Then use the `agent-browser` CLI (run `agent-browser skills get core` first) to
 screenshot the page at desktop and phone widths. Pass `--session <job-id>-ui` on
 every `agent-browser` call, so other jobs' reviewers never drive your browser.
+Save the screenshots as `<job folder>/round-<N>/ui-1280.png` (desktop) and
+`<job folder>/round-<N>/ui-375.png` (phone), setting the width with
+`agent-browser --session <job-id>-ui set viewport <w> <h>` and passing the path
+to `agent-browser screenshot`.
 Don't sign in or submit forms. When you're done, run
 `agent-browser --session <job-id>-ui close` and stop the dev server.
+
+## Observations and the visual decision
+
+Mockups or images attached to the feature live in `<job folder>/attachments/`
+(with transcriptions in `attachments.md` if present). spec.md's
+`## Acceptance criteria` names the ones each visual criterion is checked
+against. Open each referenced mockup file with Read and compare it with your
+screenshots.
+
+Then write `<job folder>/round-<N>/observations.json`: one entry per visual
+acceptance criterion in spec.md.
+
+```json
+[{"criterion": "<the spec's visual criterion text, verbatim>",
+  "observation": "<what you see, stated as fact, no verdict>",
+  "screenshot": "<path to the screenshot it is from>"}]
+```
+
+Describe what is on screen (layout, colours, text, overflow), not whether it
+passes. Pair entries with criteria by copying the criterion text exactly.
+
+Next get Mercury's read on the observations. Pass `--image` once for each
+screenshot you took and once for each mockup spec.md references. Run it from
+the main checkout, without the `cd <worktree>`:
+
+```
+factory/bin/decide visual --job <job-id> --state-json '{"round":<N>}' \
+  --image <job folder>/round-<N>/ui-1280.png \
+  --image <job folder>/round-<N>/ui-375.png \
+  --image <job folder>/attachments/<mockup>
+```
+
+Each image must be png, jpeg, webp or gif and at most 5 MB. List the record's
+`apply.unmet` and `apply.unsure` entries under Notes as evidence. The verdict
+stays your own. If the record has a non-null `error`, or `band` is
+`uncertain`, ignore its output and rely on your observations and your own
+judgement. Skip this section when the branch has no visual change.
 
 ## What to look for
 
