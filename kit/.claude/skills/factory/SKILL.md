@@ -419,14 +419,19 @@ Read the first line of `build.md`.
    `Independent verdict (ignoring Decide): APPROVE|ESCALATE` line under
    `## Why`, and the categories under `## Risks` (`none` means `[]`). The
    independent verdict is the approver's own call before Decide's forced
-   escalation, so it is the escalation truth (if the line is missing, use the
-   first line). Record
-   `factory/bin/decide outcome --job <job-id> --decision escalation --truth '{"escalate":<true when the independent verdict is ESCALATE, else false>}' 2>>factory/jobs/<job-id>/stderr.log`
-   and
+   escalation, so it is the escalation truth. Record
+   `factory/bin/decide outcome --job <job-id> --decision escalation --truth '{"escalate":<true when the independent verdict is ESCALATE, else false>}' 2>>factory/jobs/<job-id>/stderr.log`.
+   If the Independent verdict line is missing, skip that outcome (the first line
+   may be Decide's own forced verdict) and print
+   `<job-id>: no independent verdict, escalation outcome skipped`. Always record
    `factory/bin/decide outcome --job <job-id> --decision triage --truth '{"risks":[<the ## Risks categories>]}' 2>>factory/jobs/<job-id>/stderr.log`.
 4. **Decision.**
-   - `ESCALATE`: **escalate** with source `approver` and the first sentence
-     under `## Why`.
+   - `ESCALATE` and the independent verdict is `ESCALATE` (or missing):
+     **escalate** with source `approver` and, as the reason, the
+     first sentence after the Independent verdict line.
+   - `ESCALATE` but the independent verdict is `APPROVE`: Decide or the rules
+     forced it, and their `decide`/`rule` entries already cover it. Add no
+     `approver` entry; go to **Needs human**.
    - `APPROVE` and `escalations` is empty: go to **Merge**.
    - `APPROVE` but `escalations` is not empty: go to **Needs human**. Never
      merge while `escalations` has entries.

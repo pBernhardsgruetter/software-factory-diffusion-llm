@@ -45,11 +45,13 @@ hits in `decisions.jsonl`. APPROVE only if all of these hold:
 
 - Every acceptance criterion in the spec is met, with evidence in build.md that
   you find convincing. Spot-check at least one criterion yourself.
-- Every selected reviewer's latest review is `VERDICT: PASS`, and no Note in
-  them describes a real problem. A reviewer that was not selected is not a
-  failure: one with no review file in any round, or marked `skipped` in
-  job.json `reviews`, is left out. The factory already re-ran every reviewer
-  whose area the branch touched.
+- Every reviewer that has a review file in any round has `VERDICT: PASS` in
+  its newest one, and no Note in them describes a real problem. A reviewer
+  with no review file in any round was never selected (compare job.json
+  `reviewers_active`) and is left out: that is not a failure, because the
+  factory already re-ran every reviewer whose area the branch touched. A
+  `skipped` mark in job.json `reviews` only means it did not run in the final
+  round; it never excuses a newest review file that says `VERDICT: CHANGES`.
 - `git merge-tree --write-tree main <branch>` reports no conflicts.
 
 ESCALATE if any of them fails, or if the change:
