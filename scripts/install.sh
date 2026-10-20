@@ -63,7 +63,10 @@ chmod +x "$target"/factory/bin/* 2>/dev/null || true
 
 gitignore="$target/.gitignore"
 touch "$gitignore"
-for line in /factory/jobs/ /factory/.venv/ /factory/tool-gate.jsonl; do
+# Runtime state and caches must never dirty the main checkout: the factory only
+# merges into a clean one.
+for line in /factory/jobs/ /factory/.venv/ /factory/tool-gate.jsonl \
+    '/factory/**/__pycache__/' /factory/.pytest_cache/; do
   if ! grep -qxF "$line" "$gitignore"; then
     # make sure we start on a fresh line
     if [ -s "$gitignore" ] && [ -n "$(tail -c1 "$gitignore")" ]; then echo >> "$gitignore"; fi

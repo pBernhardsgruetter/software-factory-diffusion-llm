@@ -10,7 +10,9 @@
 # denied, since nothing legitimately defers there.
 #
 # - ``python -I`` (isolated): neither the cwd (a job worktree) nor PYTHONPATH /
-#   PYTHON* variables reach sys.path (rulings R38, R40).
+#   PYTHON* variables reach sys.path (rulings R38, R40). ``-B`` writes no
+#   ``__pycache__`` into the main checkout, and ``uv run --frozen`` never
+#   rewrites ``uv.lock``: a dirty checkout would block every merge.
 # - Time limit 25 s (below the 30 s hook timeout): ``timeout``, else
 #   ``gtimeout``, else perl's ``alarm`` (stock macOS), plus a shell watchdog that
 #   kills the whole process group. FACTORY_TOOLGATE_TIMEOUT_S may only SHORTEN
@@ -46,7 +48,7 @@ if [[ "$o" =~ ^[1-9][0-9]?$ ]] && [ "$o" -lt "$limit" ]; then limit="$o"; fi
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/tool-gate.XXXXXX")" || fallback "gate failed (mktemp)"
 trap 'rm -rf "$tmp"' EXIT
 
-run=(uv run --quiet --project "$here/.." python -I -m factorylib.toolgate ${1+"$@"})
+run=(uv run --frozen --quiet --project "$here/.." python -I -B -m factorylib.toolgate ${1+"$@"})
 backstop="$limit"  # no timer binary: the watchdog is the timer
 if command -v timeout >/dev/null 2>&1; then
   run=(timeout -k 2 "$limit" "${run[@]}")
