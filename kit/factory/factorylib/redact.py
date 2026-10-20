@@ -9,17 +9,39 @@ REDACTED = "[REDACTED]"
 
 _WORDS = r"(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL)"
 
-# Each entry is (pattern, replacement). Order matters: whole-line env patterns
-# and PEM blocks run first so a secret is one replacement; JWT runs before
-# `Bearer` so `Bearer <jwt>` is one replacement.
+# Every built-in pattern must run in linear time on adversarial input. The
+# rules used below: no two adjacent unbounded quantifiers that can match the
+# same characters (a name is matched as one possessive run, after a lazy
+# lookahead that only checks it contains a keyword), possessive quantifiers
+# where backtracking is never useful, a left boundary on patterns whose start
+# could otherwise be retried at every character of a long run, and a bounded
+# scheme. See test_redaction_is_linear_on_adversarial_inputs.
+#
+# Each entry is (pattern, replacement). Order matters: PEM and whole-line env
+# patterns run first so a secret is one replacement; JWT runs before `Bearer`
+# so `Bearer <jwt>` is one replacement.
 _BUILTIN: list[tuple[re.Pattern, str]] = [
-    (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"), REDACTED),
+    # PEM private key. A BEGIN with no END redacts to the end of the text (fail
+    # closed); the fallback alternative also keeps repeated BEGINs linear.
+    (
+        re.compile(
+            r"-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----"
+            r"(?:[\s\S]*?-----END [A-Z ]{0,40}PRIVATE KEY-----|[\s\S]*)"
+        ),
+        REDACTED,
+    ),
     # Column-0 env line, any value: whole line is redacted (`SECRET=abc`, `export X_KEY=v`).
-    (re.compile(rf"^(?:export[ \t]+)?[A-Z0-9_]*{_WORDS}[A-Z0-9_]*=.*$", re.MULTILINE), REDACTED),
+    (
+        re.compile(
+            rf"^(?:export[ \t]++)?(?=[A-Z0-9_]*?{_WORDS})[A-Z0-9_]++=.*$",
+            re.MULTILINE,
+        ),
+        REDACTED,
+    ),
     # Indented / mixed-case assignment (`=` or `:`), value of at least 8 non-space chars.
     (
         re.compile(
-            rf"^[ \t]*(?:export[ \t]+)?[\w.-]*{_WORDS}[\w.-]*[ \t]*[=:][ \t]*\S{{8,}}.*$",
+            rf"^[ \t]*+(?:export[ \t]++)?(?=[\w.-]*?{_WORDS})[\w.-]++[ \t]*+[=:][ \t]*+\S{{8,}}.*$",
             re.MULTILINE | re.IGNORECASE,
         ),
         REDACTED,
@@ -27,23 +49,27 @@ _BUILTIN: list[tuple[re.Pattern, str]] = [
     # Quoted JSON/YAML key with a quoted value of at least 8 non-space, non-quote chars.
     (
         re.compile(
-            rf"([\"'])[\w.-]*{_WORDS}[\w.-]*\1[ \t]*:[ \t]*([\"'])[^\s\"']{{8,}}\2",
+            rf"([\"'])(?=[\w.-]*?{_WORDS})[\w.-]++\1[ \t]*+:[ \t]*+([\"'])[^\s\"']{{8,}}+\2",
             re.IGNORECASE,
         ),
         REDACTED,
     ),
-    (re.compile(r"\bsk-[A-Za-z0-9_-]{16,}"), REDACTED),
-    (re.compile(r"sk-or-v1-[a-f0-9]{32,}"), REDACTED),
-    (re.compile(r"sk_(?:live|test)_[A-Za-z0-9]{16,}"), REDACTED),
-    (re.compile(r"gh[pousr]_[A-Za-z0-9]{36,}"), REDACTED),
-    (re.compile(r"github_pat_[A-Za-z0-9_]{20,}"), REDACTED),
-    (re.compile(r"xox[abpors]-[A-Za-z0-9-]{10,}"), REDACTED),
+    (re.compile(r"\bsk-[A-Za-z0-9_-]{16,}+"), REDACTED),
+    (re.compile(r"sk-or-v1-[a-f0-9]{32,}+"), REDACTED),
+    (re.compile(r"sk_(?:live|test)_[A-Za-z0-9]{16,}+"), REDACTED),
+    (re.compile(r"gh[pousr]_[A-Za-z0-9]{36,}+"), REDACTED),
+    (re.compile(r"github_pat_[A-Za-z0-9_]{20,}+"), REDACTED),
+    (re.compile(r"xox[abpors]-[A-Za-z0-9-]{10,}+"), REDACTED),
     (re.compile(r"AKIA[0-9A-Z]{16}"), REDACTED),
-    (re.compile(r"eyJ[\w-]+\.[\w-]+\.[\w-]+"), REDACTED),
-    (re.compile(r"bearer\s+[A-Za-z0-9._~+/=-]{16,}", re.IGNORECASE), REDACTED),
+    # JWT: the left boundary means a start is only tried at the head of a run.
+    (re.compile(r"(?<![\w-])eyJ[\w-]++\.[\w-]++\.[\w-]++"), REDACTED),
+    (re.compile(r"bearer\s++[A-Za-z0-9._~+/=-]{16,}+", re.IGNORECASE), REDACTED),
     # URL userinfo: keep scheme and user, redact only the password.
     (
-        re.compile(r"(?P<pre>[a-z][a-z0-9+.-]*://[^/\s:@]+:)[^/\s@]+@", re.IGNORECASE),
+        re.compile(
+            r"(?<![a-z0-9+.-])(?P<pre>[a-z][a-z0-9+.-]{0,31}+://[^/\s:@]++:)[^/\s@]++@",
+            re.IGNORECASE,
+        ),
         r"\g<pre>" + REDACTED + "@",
     ),
 ]
@@ -65,6 +91,10 @@ def redact_obj(obj: Any, extra_patterns: list[str]) -> tuple[Any, int]:
     Walks dicts, lists, tuples, sets and frozensets; string leaves are redacted
     and bytes/bytearray leaves are decoded (utf-8, errors=replace) to str first.
     Dict keys and other leaves are left untouched. The input is never mutated.
+
+    ``extra_patterns`` come from config and are compiled as-is: they MUST be
+    linear-time (no nested or adjacent unbounded quantifiers). The built-ins
+    guarantee that for themselves, but a bad config pattern can still stall.
     """
     patterns = _BUILTIN + _compile_extra(extra_patterns)
     return _walk(obj, patterns)

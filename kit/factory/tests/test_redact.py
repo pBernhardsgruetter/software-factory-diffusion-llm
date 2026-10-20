@@ -1,4 +1,5 @@
 import copy
+import time
 
 import pytest
 
@@ -204,3 +205,44 @@ def test_set_and_frozenset_walked_preserving_type():
     assert out["s"] == {"[REDACTED]", "ok"} and isinstance(out["s"], set)
     assert out["f"] == frozenset({"[REDACTED]"}) and isinstance(out["f"], frozenset)
     assert count == 2
+
+
+# ---- fix round 2: linear-time guarantees ----
+
+PERF_BUDGET_S = 1.0
+
+ADVERSARIAL = {
+    "a_run": "a" * 200_000,
+    "key_words": "KEY" * 66_666,
+    "indent_key_words": "  " + "KEY" * 66_000,
+    "scheme_no_userinfo": "a:// " * 40_000,
+    "at_signs": "aaa@" * 50_000,
+    "jwt_prefix_run": "eyJ" + "a" * 199_997,
+    "pem_no_end": "-----BEGIN RSA PRIVATE KEY-----" + "a" * 199_000,
+    "sk_dashes": "sk-" * 66_666,
+    "bearer_words": "Bearer " * 28_000,
+    "jwt_prefix_repeated": "eyJ" * 66_666,
+    "pem_begin_repeated": "-----BEGIN RSA PRIVATE KEY-----" * 6_000,
+    "quote_key_words": '"' + "KEY" * 66_666,
+}
+
+
+@pytest.mark.parametrize("text", list(ADVERSARIAL.values()), ids=list(ADVERSARIAL))
+def test_redaction_is_linear_on_adversarial_inputs(text):
+    start = time.perf_counter()
+    redact_obj(text, [])
+    elapsed = time.perf_counter() - start
+    assert elapsed < PERF_BUDGET_S, f"redact_obj took {elapsed:.2f}s"
+
+
+def test_unterminated_pem_block_redacted_to_end():
+    out, count = redact_obj("ok\n-----BEGIN PRIVATE KEY-----\nMIIE\nmore", [])
+    assert out == "ok\n[REDACTED]"
+    assert count == 1
+
+
+def test_jwt_after_separator_still_redacted():
+    for prefix in ("", "token=", "Bearer ", '"', "x.", " "):
+        out, count = redact_obj(prefix + JWT, [])
+        assert "eyJ" not in out, prefix
+        assert count >= 1
