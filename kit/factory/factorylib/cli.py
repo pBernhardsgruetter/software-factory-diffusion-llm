@@ -5,9 +5,12 @@
     decide outcome --job <id> --decision <name> --truth '<json>' [--note TEXT]
     decide report                      (Task 13; not implemented yet)
 
-Prints exactly one JSON object on stdout. Exit 0 whenever a record is printed,
-even if the Decide call itself failed (the error is in the record); exit 2 on a
-usage error, an unknown decision, a bad job id, bad JSON or a bad image.
+Prints exactly one JSON object on stdout. Exit 0 whenever a record is printed:
+a failed Decide call and environment errors (unreadable config or policy, a
+failed state build, a failed log write) still print a fallback record with
+``error`` set. Exit 2 only for caller mistakes: a usage error, an unknown
+decision, a bad job id, bad JSON or a bad image (or no usable template). Exit 1
+when ``outcome`` cannot write its record.
 """
 
 from __future__ import annotations
@@ -29,6 +32,10 @@ _JOB_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 class UsageError(Exception):
     """Exit 2 with this message on stderr."""
+
+
+class WriteError(Exception):
+    """Exit 1 with this message on stderr (the outcome could not be recorded)."""
 
 
 class _Parser(argparse.ArgumentParser):
@@ -97,11 +104,15 @@ def _decide(argv: list[str]) -> dict:
 
     root = _root()
     job = _job(root, a.job) if a.job is not None else None
+    state_error = None
     try:
         state = build_state(name, root, job, extra)
+    except Exception as exc:  # environment trouble (config, policy, git): fall back
+        state, state_error = extra, f"{type(exc).__name__}: {exc}"
+    try:
         return run_decision(name, root=root, job=job, state=state,
-                            images=[Path(i) for i in a.image])
-    except (ValueError, OSError) as exc:  # bad image, template or config
+                            images=[Path(i) for i in a.image], state_error=state_error)
+    except (ValueError, OSError) as exc:  # a bad image, or no usable template
         raise UsageError(f"decide {name}: {exc}") from exc
 
 
@@ -120,7 +131,11 @@ def _outcome(argv: list[str]) -> dict:
     job = _job(_root(), a.job)
     record = {"kind": "outcome", "decision": name, "job": job.id, "truth": truth,
               "note": a.note, "ts": now_iso()}
-    append_jsonl(job.folder / "decisions.jsonl", record)
+    try:
+        append_jsonl(job.folder / "decisions.jsonl", record)
+    except OSError as exc:
+        raise WriteError(f"decide outcome: could not write {job.folder / 'decisions.jsonl'}: "
+                         f"{exc}") from exc
     return record
 
 
@@ -133,6 +148,9 @@ def main(argv: list[str] | None = None) -> int:
     except UsageError as exc:
         print(exc, file=sys.stderr)
         return 2
+    except WriteError as exc:
+        print(exc, file=sys.stderr)
+        return 1
     print(json.dumps(record))
     return 0
 

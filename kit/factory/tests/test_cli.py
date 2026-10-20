@@ -63,8 +63,8 @@ def test_cli_decide_prints_record_and_exits_0_on_decide_error(root, capsys):
 def test_cli_state_json_wins_over_state_file(root, capsys, monkeypatch):
     seen = {}
 
-    def fake_run(name, *, root, job, state, images):
-        seen.update(name=name, state=state, images=images, job=job)
+    def fake_run(name, *, root, job, state, images, state_error):
+        seen.update(name=name, state=state, images=images, job=job, state_error=state_error)
         return {"kind": "decision"}
 
     monkeypatch.setattr(cli, "run_decision", fake_run)
@@ -76,6 +76,7 @@ def test_cli_state_json_wins_over_state_file(root, capsys, monkeypatch):
     assert seen["state"]["a"] == 1 and seen["state"]["b"] == 2
     assert seen["state"]["output_tail"] == "boom"
     assert seen["job"].id == "smoke" and seen["images"] == []
+    assert seen["state_error"] is None
 
 
 def test_cli_outcome_appends(root, capsys):
@@ -175,3 +176,144 @@ def test_bin_decide_wrapper_end_to_end(root):
     assert r.returncode == 0, r.stderr
     rec = json.loads(r.stdout)
     assert rec["decision"] == "triage" and rec["apply"]["tier"] == "heavy"
+
+
+def fallback_checks(code, out, err):
+    assert code == 0, err
+    rec = json.loads(out)
+    assert rec["error"] and rec["band"] == "uncertain"
+    return rec
+
+
+def test_cli_config_error_prints_fallback(root, capsys):
+    (root / "factory" / "config.json").write_text("{corrupt")
+    rec = fallback_checks(*run(capsys, "triage", "--job", "smoke"))
+    assert rec["error"].startswith("JSONDecodeError: ")
+    assert rec["apply"] == {"tier": "heavy", "reviewers": ["security", "ux", "ui", "code"],
+                            "risks": []}
+
+
+def test_cli_policy_error_escalation_fails_closed(root, capsys):
+    (root / "factory" / "policy.json").write_text("{corrupt")
+    rec = fallback_checks(*run(capsys, "escalation", "--job", "smoke"))
+    assert rec["error"].startswith("JSONDecodeError: ")
+    assert rec["apply"]["escalate"] is True
+    assert rec["apply"]["reasons"] == ["<state build failed>"]
+    assert lines(root) == [rec]
+
+
+def test_cli_route_exception_prints_fallback(root, capsys, monkeypatch):
+    from factorylib.routes import ROUTES
+
+    def boom(banded, state):
+        raise RuntimeError("route broke")
+
+    monkeypatch.setitem(ROUTES, "triage", boom)
+    rec = fallback_checks(*run(capsys, "triage", "--job", "smoke"))
+    assert rec["error"]  # missing key comes first; the route still must not crash
+    assert rec["route"] is None and rec["apply"]["tier"] == "heavy"
+
+
+def test_cli_route_exception_with_key_prints_fallback(root, capsys, monkeypatch):
+    import factorylib.run as run_mod
+    from factorylib.client import RawResult
+    from factorylib.routes import ROUTES
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key-not-real")
+    monkeypatch.setattr(run_mod, "post_decision",
+                        lambda *a, **k: RawResult("m", {}, {}, 1))
+    monkeypatch.setitem(ROUTES, "triage", lambda b, s: 1 / 0)
+    rec = fallback_checks(*run(capsys, "triage", "--job", "smoke"))
+    assert rec["error"].startswith("ZeroDivisionError: ")
+    assert rec["apply"]["tier"] == "heavy"
+
+
+def test_cli_log_append_failure_still_prints(root, capsys):
+    (root / "factory" / "jobs" / "smoke" / "decisions.jsonl").mkdir()
+    rec = fallback_checks(*run(capsys, "triage", "--job", "smoke"))
+    assert "decision log" in rec["error"]
+    assert rec["apply"]["tier"] == "heavy"
+
+
+def test_cli_log_append_failure_overrides_active_route(root, capsys, monkeypatch):
+    import factorylib.run as run_mod
+    from factorylib.client import RawResult
+
+    cfg = json.loads((root / "factory" / "config.json").read_text())
+    cfg["decisions"]["promote"] = {"mode": "active"}
+    (root / "factory" / "config.json").write_text(json.dumps(cfg))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key-not-real")
+    answers = {"beyond_fast_tier": {"type": "boolean", "probability": 0.01}}
+    monkeypatch.setattr(run_mod, "post_decision",
+                        lambda *a, **k: RawResult("m", answers, {}, 1))
+    (root / "factory" / "jobs" / "smoke" / "decisions.jsonl").mkdir()
+    rec = fallback_checks(*run(capsys, "promote", "--job", "smoke"))
+    assert rec["error"].startswith("decision log write failed: IsADirectoryError")
+    assert rec["route"] == {"promote": False}
+    assert rec["apply"] == {"promote": True}
+
+
+@pytest.mark.parametrize("target,exc", [
+    ("cli.build_state", KeyError("x")),
+    ("run.band_answers", AttributeError("no attr")),
+])
+def test_cli_unexpected_exception_type_prints_fallback(root, capsys, monkeypatch, target, exc):
+    import factorylib.run as run_mod
+    from factorylib.client import RawResult
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key-not-real")
+    monkeypatch.setattr(run_mod, "post_decision", lambda *a, **k: RawResult("m", {}, {}, 1))
+    mod = {"cli": cli, "run": run_mod}[target.split(".")[0]]
+
+    def raiser(*a, **k):
+        raise exc
+
+    monkeypatch.setattr(mod, target.split(".")[1], raiser)
+    rec = fallback_checks(*run(capsys, "triage", "--job", "smoke"))
+    assert type(exc).__name__ in rec["error"]
+    assert rec["apply"]["tier"] == "heavy"
+
+
+def test_cli_outcome_write_failure_exit_1(root, capsys):
+    (root / "factory" / "jobs" / "smoke" / "decisions.jsonl").mkdir()
+    code, out, err = run(capsys, "outcome", "--job", "smoke", "--decision", "triage",
+                         "--truth", "{}")
+    assert code == 1 and out == "" and "decisions.jsonl" in err
+
+
+def test_cli_secret_at_cut_point_not_sent(root, capsys, monkeypatch):
+    import hashlib
+
+    import factorylib.run as run_mod
+    from factorylib.client import RawResult
+    from factorylib.state import _apply_caps
+
+    hexkey = hashlib.sha256(b"planted").hexdigest()
+    secret = "sk-or-v1-" + hexkey
+    diff_body = "\n".join([secret] * 4500) + "\n"  # ~333 KB
+    git(root, "checkout", "-b", "feat")
+    (root / "notes.txt").write_text(diff_body)
+    git(root, "add", "notes.txt")
+    git(root, "commit", "-m", "add notes")
+    assert len(diff_body) > 300_000
+
+    # Precondition: capping the raw text first WOULD leave a hex fragment behind,
+    # so this test can tell redact-then-cap from cap-then-redact.
+    raw_capped = json.dumps(_apply_caps({"spec": "", "diff_stat": "", "diff": diff_body}, 200_000))
+    assert any(hexkey[i:i + 8] in raw_capped.replace(secret, "") for i in range(57))
+
+    seen = []
+
+    def fake_post(state, questions, *, cfg, api_key):
+        seen.append(json.dumps({"state": state, "questions": questions}))
+        return RawResult("m", {}, {}, 1)
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key-not-real")
+    monkeypatch.setattr(run_mod, "post_decision", fake_post)
+    code, out, err = run(capsys, "escalation", "--job", "smoke")
+    assert code == 0, err
+    assert len(seen) == 1
+    payload = seen[0]
+    assert "[REDACTED]" in payload
+    assert "sk-or-v1" not in payload
+    assert not any(hexkey[i:i + 8] in payload for i in range(57))

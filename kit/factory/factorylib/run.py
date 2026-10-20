@@ -47,9 +47,11 @@ def append_jsonl(path: Path, record: dict) -> None:
     data = (json.dumps(record) + "\n").encode()
     fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
     try:
-        os.write(fd, data)
+        n = os.write(fd, data)
     finally:
         os.close(fd)
+    if n != len(data):
+        raise OSError(f"{path}: short write ({n} of {len(data)} bytes)")
 
 
 # ------------------------------------------------------------------- images
@@ -154,6 +156,17 @@ def _force_escalation(apply: dict, hits: list[str]) -> dict:
     return out
 
 
+STATE_BUILD_FAILED = "<state build failed>"
+
+
+def _redact_hits(hits: list[str], cfg: dict) -> list[str]:
+    """Rule hits go into logged ``reasons``: redact them like any state text."""
+    try:
+        return redact_obj(hits, cfg.get("redact_patterns") or [])[0]
+    except Exception:  # a bad configured pattern: built-in patterns only
+        return redact_obj(hits, [])[0]
+
+
 # --------------------------------------------------------------------- main
 
 
@@ -163,6 +176,29 @@ def _log_path(root: Path, job: Job | None) -> Path:
     return Path(job.folder) / "decisions.jsonl"
 
 
+def _err(exc: BaseException) -> str:
+    return f"{type(exc).__name__}: {exc}"
+
+
+def _scrub(msg: str | None, cfg: dict) -> str | None:
+    """Remove the API key's value from an error message, whatever raised it."""
+    if not msg:
+        return msg
+    env = (cfg.get("decide") or {}).get("api_key_env") or "OPENROUTER_API_KEY"
+    for key in {os.environ.get(env), os.environ.get("OPENROUTER_API_KEY")}:
+        if key:
+            msg = msg.replace(key, REDACTED)
+    return msg
+
+
+def _fallback(tpl: dict, state: dict, hits: list[str]) -> dict:
+    try:
+        apply = resolve_fallback(tpl, state)
+    except Exception:
+        apply = resolve_fallback(tpl, {})
+    return _force_escalation(apply, hits) if hits else apply
+
+
 def run_decision(
     name: str,
     *,
@@ -170,38 +206,59 @@ def run_decision(
     job: Job | None,
     state: dict,
     images: list[Path] = [],  # noqa: B006 (never mutated)
-    post=post_decision,
+    post=None,
+    state_error: str | None = None,
 ) -> dict:
     """Run decision ``name`` on ``state``, append the record to the log and return it.
 
-    Raises ``ValueError`` for an unknown decision, an invalid template or a bad
-    image (nothing is sent or logged then). Every Decide failure is caught and
-    carried in ``record["error"]`` with ``apply`` set to the fallback.
+    Raises ``ValueError`` only for caller mistakes and an unusable template: an
+    unknown decision, a template that does not load, or a bad image (nothing is
+    sent or logged then). Once the template has loaded, every other failure
+    (config, state preparation, Decide, banding, route, log write) is caught and
+    carried in ``record["error"]`` with ``band: "uncertain"`` and ``apply`` set to
+    the fallback.
+
+    ``state_error`` says the caller could not build the state (``state`` is then
+    best effort): nothing is sent, and for ``escalation`` the fail-closed rule hit
+    ``"<state build failed>"`` forces an escalation. ``post`` defaults to
+    ``client.post_decision`` (looked up at call time).
     """
     if name not in ROUTES:
         raise ValueError(f"unknown decision {name!r}; known: {', '.join(ROUTES)}")
     root = Path(root)
-    cfg = load_config(root)
-    dc = decision_config(cfg, name)
-    mode = "active" if dc["mode"] == "active" else "shadow"
     tpl = load_template(root, name)
     image_parts = [image_part(p) for p in images or []]
+    post = post or post_decision
+    state = state if isinstance(state, dict) else {}
 
-    error: str | None = None
+    error: str | None = state_error
+    cfg: dict = {}
+    mode, thresholds = "shadow", {}
+    try:
+        cfg = load_config(root)
+        dc = decision_config(cfg, name)
+        mode = "active" if dc["mode"] == "active" else "shadow"
+        thresholds = dc["thresholds"]
+    except Exception as exc:  # unreadable config: shadow, fallback, no call
+        cfg, error = {}, error or _err(exc)
+
     raw = None
     latency_ms = None
     redactions = 0
     clean = None
     sha = None
-    api_key = None
-    try:
-        clean, redactions = prepare_state(state, cfg)
-        sha = hashlib.sha256(json.dumps(clean, sort_keys=True).encode()).hexdigest()
-    except Exception as exc:  # never send a state we could not redact
-        error = f"state preparation failed: {type(exc).__name__}: {exc}"
+    if error is None:
+        try:
+            clean, redactions = prepare_state(state, cfg)
+            sha = hashlib.sha256(json.dumps(clean, sort_keys=True).encode()).hexdigest()
+        except Exception as exc:  # never send a state we could not redact
+            clean, error = None, _err(exc)
 
     # Expanded from the redacted state: per-item text goes into the instructions.
-    questions = expand_questions(tpl, clean if clean is not None else state)
+    try:
+        questions = expand_questions(tpl, clean if clean is not None else state)
+    except Exception as exc:
+        questions, error = {}, error or _err(exc)
 
     if error is None and questions:
         env = cfg["decide"].get("api_key_env", "OPENROUTER_API_KEY")
@@ -220,49 +277,64 @@ def run_decision(
             except DecideError as exc:
                 error = str(exc)
             except Exception as exc:  # any failure falls back, never crashes the caller
-                error = f"{type(exc).__name__}: {exc}"
+                error = _err(exc)
             if error is not None:
+                raw = None
                 latency_ms = int((time.monotonic() - t0) * 1000)
-    if error and api_key:
-        error = error.replace(api_key, REDACTED)
 
-    banded = band_answers(questions, raw.answers if raw else {}, dc["thresholds"])
-    hits = coerce_rule_hits(state.get("rule_hits")) if name == "escalation" else []
+    try:
+        banded = band_answers(questions, raw.answers if raw else {}, thresholds)
+    except Exception as exc:
+        banded, error = {}, error or _err(exc)
+
+    hits: list[str] = []
+    if name == "escalation":
+        hits = _redact_hits(coerce_rule_hits(state.get("rule_hits")), cfg)
+        if state_error and STATE_BUILD_FAILED not in hits:
+            hits.append(STATE_BUILD_FAILED)
     rstate = {**state, "rule_hits": hits} if name == "escalation" else state
     try:
         route = ROUTES[name](banded, rstate)
     except Exception as exc:
-        route = None
-        error = error or f"route failed: {type(exc).__name__}: {exc}"
+        route, error = None, error or _err(exc)
 
     if mode == "active" and error is None and route is not None:
-        apply = route
+        apply = _force_escalation(route, hits) if hits else route
     else:
-        apply = resolve_fallback(tpl, rstate)
-    if hits:
-        apply = _force_escalation(apply, hits)
+        apply = _fallback(tpl, rstate, hits)
 
-    confident = error is None and all(b.confident for b in banded.values())
+    if error is not None:
+        band = "uncertain"
+    elif not questions:
+        band = "n/a"  # nothing was asked; the route is deterministic
+    else:
+        band = "confident" if all(b.confident for b in banded.values()) else "uncertain"
     record = {
         "kind": "decision",
         "decision": name,
         "id": tpl.get("id"),
         "job": job.id if job is not None else None,
         "mode": mode,
-        "band": "confident" if confident else "uncertain",
+        "band": band,
         "answers": {q: dataclasses.asdict(b) for q, b in banded.items()},
         "route": route,
         "apply": apply,
         "model": raw.model if raw else None,
         "latency_ms": latency_ms,
         "usage": raw.usage if raw else {},
-        "error": error,
+        "error": _scrub(error, cfg),
         "redactions": redactions,
         "state_sha256": sha,
         "ts": now_iso(),
     }
     try:
         append_jsonl(_log_path(root, job), record)
-    except OSError as exc:  # the caller still gets its answer
-        print(f"decide: could not write decision log: {exc}", file=sys.stderr)
+    except Exception as exc:
+        # The decision is unrecorded, so it cannot be calibrated or audited:
+        # do not act on it. The caller still gets a full fallback record.
+        note = _scrub(f"decision log write failed: {_err(exc)}", cfg)
+        record["error"] = f"{note}; {record['error']}" if record["error"] else note
+        record["band"] = "uncertain"
+        record["apply"] = _fallback(tpl, rstate, hits)
+        print(f"decide: {note}", file=sys.stderr)
     return record

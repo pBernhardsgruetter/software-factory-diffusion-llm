@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -218,6 +219,7 @@ def test_no_questions_skips_post(tmp_path):
     rec = run_decision("finding", root=root, job=job, state={"findings": []}, post=post)
     assert post.calls == []
     assert rec["error"] is None and rec["apply"] == {"fast_fixer": [], "builder": []}
+    assert rec["band"] == "n/a"
 
 
 def test_log_has_hash_not_state(tmp_path):
@@ -355,3 +357,49 @@ def test_concurrent_appends_are_whole_lines(tmp_path):
     recs = [json.loads(line) for line in lines]
     assert all(r["pad"] == str(r["writer"]) * 3000 for r in recs)
     assert {(r["writer"], r["i"]) for r in recs} == {(n, i) for n in range(8) for i in range(200)}
+
+
+def test_append_jsonl_short_write_raises(tmp_path, monkeypatch):
+    import factorylib.run as run_mod
+    real = os.write
+    monkeypatch.setattr(run_mod.os, "write", lambda fd, data: real(fd, data[:3]))
+    with pytest.raises(OSError, match="short write"):
+        append_jsonl(tmp_path / "log.jsonl", {"x": 1})
+
+
+def test_escalation_rule_hits_redacted_in_reasons(tmp_path):
+    root, job = make_root(tmp_path)
+    rec = run_decision("escalation", root=root, job=job,
+                       state={"rule_hits": [f"OPENROUTER_API_KEY={SECRET}", "a.env"]},
+                       post=Stub(ESC_CLEAN))
+    assert rec["apply"] == {"escalate": True, "reasons": ["[REDACTED]", "a.env"]}
+    assert SECRET not in json.dumps(rec)
+    assert SECRET not in (job.folder / "decisions.jsonl").read_text()
+
+
+def test_state_error_escalation_fails_closed(tmp_path):
+    root, job = make_root(tmp_path, modes={"escalation": "active"})
+    post = Stub(ESC_CLEAN)
+    rec = run_decision("escalation", root=root, job=job, state={},
+                       state_error="JSONDecodeError: bad policy", post=post)
+    assert post.calls == []
+    assert rec["error"] == "JSONDecodeError: bad policy" and rec["band"] == "uncertain"
+    assert rec["apply"] == {"escalate": True, "reasons": ["<state build failed>"]}
+
+
+def test_config_error_after_template_gives_fallback(tmp_path):
+    root, job = make_root(tmp_path, modes={"triage": "active"})
+    (root / "factory" / "config.json").write_text("{corrupt")
+    post = Stub(TRIAGE_FAST)
+    rec = run_decision("triage", root=root, job=job, state={"feature": "x"}, post=post)
+    assert post.calls == []
+    assert rec["error"].startswith("JSONDecodeError: ")
+    assert rec["band"] == "uncertain" and rec["mode"] == "shadow"
+    assert rec["apply"]["tier"] == "heavy"
+
+
+def test_error_message_scrubs_key(tmp_path):
+    root, job = make_root(tmp_path, modes={"triage": "active"})
+    rec = run_decision("triage", root=root, job=job, state={"feature": "x"},
+                       post=Stub(exc=RuntimeError("bad header test-key-not-real")))
+    assert "test-key-not-real" not in rec["error"] and "[REDACTED]" in rec["error"]
