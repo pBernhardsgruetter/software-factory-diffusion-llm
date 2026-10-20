@@ -80,6 +80,27 @@ def test_to_wire_questions_maps_boolean_only_and_does_not_mutate():
 
 
 @respx.mock
+def test_boolean_criteria_not_sent_but_folded_into_instructions():
+    route = respx.post(ENDPOINT).respond(200, json=OK_BODY)
+    qs = {"b": {"type": "boolean", "instructions": "Is it?",
+                "criteria": {"true": "it is X", "false": "it is Y"}},
+          "t": {"type": "boolean", "instructions": "T?", "criteria": {"true": "only t"}},
+          "f": {"type": "boolean", "instructions": "F?", "criteria": {"false": "only f"}}}
+    post_decision({"s": 1}, qs, cfg=CFG, api_key=KEY)
+    sent = json.loads(route.calls.last.request.content)["questions"]
+    assert all("criteria" not in v and v["type"] == "noul" for v in sent.values())
+    assert sent["b"]["instructions"] == "Is it? Answer true if: it is X. Answer false if: it is Y."
+    assert sent["t"]["instructions"] == "T? Answer true if: only t."
+    assert sent["f"]["instructions"] == "F? Answer false if: only f."
+    assert qs["b"]["instructions"] == "Is it?" and "criteria" in qs["b"]
+
+
+def test_boolean_without_criteria_keeps_instructions_unchanged():
+    wire = to_wire_questions({"b": {"type": "boolean", "instructions": "Is it?"}})
+    assert wire["b"] == {"type": "noul", "instructions": "Is it?"}
+
+
+@respx.mock
 def test_free_then_paid_on_429():
     route = respx.post(ENDPOINT)
     route.side_effect = [httpx.Response(429, json={"error": {"message": "slow", "code": 429}}),

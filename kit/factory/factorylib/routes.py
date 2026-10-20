@@ -82,14 +82,20 @@ def failure(banded, state):
 
 
 def rereview(banded, state):
+    """Fail closed: a reviewer is skipped only if it previously passed (or never ran)
+    AND area_touched is confidently False. Missing reviewer state re-runs all four."""
     items = (state or {}).get("reviewers")
-    items = items if isinstance(items, list) else []
+    if not isinstance(items, list) or not items:
+        return {"reviewers": list(REVIEWERS)}
     out = []
     for i, item in enumerate(items):
-        name = item.get("name") if isinstance(item, dict) else item
-        verdict = item.get("last_verdict") if isinstance(item, dict) else None
-        # A reviewer that never ran (null / "skipped") counts like a PASS.
-        if verdict == "CHANGES" or _flagged(_get(banded, f"r{i}")):
+        name = item.get("name") if isinstance(item, dict) else None
+        if not isinstance(name, str):
+            continue
+        v = item.get("last_verdict")
+        verdict = None if v is None else str(v).strip().upper()
+        clean = verdict is None or verdict in ("PASS", "SKIPPED")
+        if not (clean and _is_false(_get(banded, f"r{i}"))):
             out.append(name)
     return {"reviewers": out}
 

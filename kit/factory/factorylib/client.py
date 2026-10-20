@@ -19,8 +19,20 @@ TITLE = "mercury-factory"
 
 # Internal question type -> wire question type.
 _WIRE_TYPE = {"boolean": "noul"}
-# Template keys that are factory-only and must not be sent.
+# Template keys sent on the wire; factory-only keys (``risk``) are dropped.
 _WIRE_FIELDS = ("instructions", "criteria")
+
+
+def _boolean_instructions(q: dict) -> str:
+    """Boolean ``criteria`` is not sent (wire shape unverified); fold it into the instructions."""
+    text = q.get("instructions", "")
+    crit = q.get("criteria")
+    if isinstance(crit, dict):
+        if crit.get("true"):
+            text += f" Answer true if: {crit['true']}."
+        if crit.get("false"):
+            text += f" Answer false if: {crit['false']}."
+    return text
 
 
 class DecideError(Exception):
@@ -41,6 +53,11 @@ def to_wire_questions(questions: dict) -> dict:
     for name, q in questions.items():
         qtype = q["type"]
         out = {"type": _WIRE_TYPE.get(qtype, qtype)}
+        if qtype == "boolean":
+            if "instructions" in q or "criteria" in q:
+                out["instructions"] = _boolean_instructions(q)
+            wire[name] = out
+            continue
         for field in _WIRE_FIELDS:
             if field in q:
                 out[field] = q[field]

@@ -161,8 +161,33 @@ def test_rereview_touched_included_even_if_pass():
     assert ROUTES["rereview"](banded, state) == {"reviewers": ["ux", "ui"]}
 
 
-def test_rereview_empty_state():
-    assert ROUTES["rereview"]({}, {}) == {"reviewers": []}
+def test_rereview_missing_reviewers_state_returns_all():
+    assert ROUTES["rereview"]({}, {}) == {"reviewers": ALL4}
+    assert ROUTES["rereview"]({}, {"reviewers": []}) == {"reviewers": ALL4}
+    assert ROUTES["rereview"]({}, {"reviewers": None}) == {"reviewers": ALL4}
+
+
+def test_rereview_lowercase_changes_included():
+    state = rr_state("changes", " Changes ", "pass", "Skipped")
+    banded = {f"r{i}": no() for i in range(4)}
+    assert ROUTES["rereview"](banded, state) == {"reviewers": ["security", "ux"]}
+
+
+def test_rereview_unknown_verdict_included():
+    state = rr_state("APPROVED", "FAIL", 7, "")
+    banded = {f"r{i}": no() for i in range(4)}
+    assert ROUTES["rereview"](banded, state) == {"reviewers": ALL4}
+
+
+def test_rereview_nameless_item_ignored():
+    state = {"reviewers": [
+        {"last_verdict": "CHANGES", "delta_stat": ""},
+        {"name": 3, "last_verdict": "CHANGES"},
+        "code",
+        {"name": "ux", "last_verdict": "CHANGES"},
+    ]}
+    banded = {f"r{i}": no() for i in range(4)}
+    assert ROUTES["rereview"](banded, state) == {"reviewers": ["ux"]}
 
 
 def test_rereview_missing_answer_is_uncertain():

@@ -7,7 +7,7 @@ from factorylib.banding import band_answers
 from factorylib.routes import ROUTES
 from factorylib.templates import expand_questions, load_template
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent  # kit/: mirrors a target repo root
 NAMES = ["triage", "clarify", "assumptions", "failure", "rereview", "finding",
          "promote", "stuck", "escalation", "toolgate", "visual"]
 RISKS = ["auth", "payments", "dependencies", "ci_deploy", "schema_migration",
@@ -15,7 +15,7 @@ RISKS = ["auth", "payments", "dependencies", "ci_deploy", "schema_migration",
 
 
 def test_all_templates_load_and_have_route():
-    files = sorted(p.stem for p in (ROOT / "decisions").glob("*.json"))
+    files = sorted(p.stem for p in (ROOT / "factory" / "decisions").glob("*.json"))
     assert files == sorted(NAMES)
     for name in files:
         tpl = load_template(ROOT, name)
@@ -131,3 +131,126 @@ def test_resolve_fallback_is_fresh_and_resolves_all():
     tri = load_template(ROOT, "triage")
     f1, f2 = resolve_fallback(tri, {}), resolve_fallback(tri, {})
     assert f1 == tri["fallback"] and f1 is not f2 and f1["reviewers"] is not f2["reviewers"]
+
+
+# ---- load-time validation ----
+
+GOOD = {
+    "id": "D99", "name": "demo",
+    "questions": {
+        "b": {"type": "boolean", "instructions": "Is it?",
+              "criteria": {"true": "yes", "false": "no"}, "risk": True},
+        "c": {"type": "choice", "instructions": "Which?", "criteria": {"a": "A"}},
+        "s": {"type": "score", "instructions": "How much?", "criteria": ["lo", "hi"]},
+    },
+    "per_item": {"state_key": "items", "prefix": "i",
+                 "question": {"type": "boolean", "instructions": "Item ok?"}},
+    "fallback": {"x": 1},
+}
+
+
+def write(tmp_path, tpl, name="demo"):
+    d = tmp_path / "factory" / "decisions"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{name}.json").write_text(json.dumps(tpl))
+    return tmp_path
+
+
+def mutated(**changes):
+    import copy
+    t = copy.deepcopy(GOOD)
+    for k, v in changes.items():
+        if v is _DEL:
+            t.pop(k, None)
+        else:
+            t[k] = v
+    return t
+
+
+_DEL = object()
+
+
+def q_with(**kw):
+    import copy
+    t = copy.deepcopy(GOOD)
+    t["questions"]["x"] = {"type": "boolean", "instructions": "X?", **kw}
+    return t
+
+
+def test_load_template_reads_root_factory_decisions(tmp_path):
+    write(tmp_path, GOOD)
+    assert load_template(tmp_path, "demo")["id"] == "D99"
+
+
+def test_load_template_does_not_read_root_decisions(tmp_path):
+    (tmp_path / "decisions").mkdir()
+    (tmp_path / "decisions" / "demo.json").write_text(json.dumps(GOOD))
+    with pytest.raises(FileNotFoundError):
+        load_template(tmp_path, "demo")
+
+
+def test_all_shipped_templates_validate():
+    for n in NAMES:
+        load_template(ROOT, n)
+
+
+@pytest.mark.parametrize("tpl,fragment", [
+    (mutated(id=_DEL), "id"),
+    (mutated(name="other"), "name"),
+    (mutated(name=_DEL), "name"),
+    (mutated(questions=[]), "questions"),
+    (mutated(questions=_DEL), "questions"),
+    (mutated(per_item=[]), "per_item"),
+    (mutated(per_item={"state_key": "i", "prefix": "p"}), "per_item"),
+    (mutated(per_item={"state_key": "i", "prefix": "p", "question": {"type": "boolean",
+        "instructions": "q"}, "extra": 1}), "per_item"),
+    (mutated(per_item={"state_key": 1, "prefix": "p", "question": {"type": "boolean",
+        "instructions": "q"}}), "per_item"),
+    (mutated(per_item={"state_key": "i", "prefix": 2, "question": {"type": "boolean",
+        "instructions": "q"}}), "per_item"),
+    (mutated(per_item={"state_key": "i", "prefix": "p", "question": "q"}), "per_item"),
+    (mutated(per_item={"state_key": "i", "prefix": "p", "question": {"type": "text",
+        "instructions": "q"}}), "per_item"),
+    (mutated(fallback=[]), "fallback"),
+    (mutated(fallback=_DEL), "fallback"),
+    (q_with(type="text"), "type"),
+    (mutated(questions={"x": {"instructions": "X?"}}), "type"),
+    (mutated(questions={"x": {"type": "boolean"}}), "instructions"),
+    (mutated(questions={"x": {"type": "boolean", "instructions": "  "}}), "instructions"),
+    (mutated(questions={"x": {"type": "boolean", "instructions": 5}}), "instructions"),
+    (mutated(questions={"x": {"type": "choice", "instructions": "?"}}), "criteria"),
+    (mutated(questions={"x": {"type": "choice", "instructions": "?", "criteria": {}}}), "criteria"),
+    (mutated(questions={"x": {"type": "choice", "instructions": "?", "criteria": ["a"]}}), "criteria"),
+    (mutated(questions={"x": {"type": "score", "instructions": "?", "criteria": ["only"]}}), "criteria"),
+    (mutated(questions={"x": {"type": "score", "instructions": "?", "criteria": [str(i) for i in "abcdefghijk"]}}), "criteria"),
+    (mutated(questions={"x": {"type": "score", "instructions": "?", "criteria": ["a", ""]}}), "criteria"),
+    (mutated(questions={"x": {"type": "score", "instructions": "?", "criteria": ["a", 2]}}), "criteria"),
+    (mutated(questions={"x": {"type": "score", "instructions": "?", "criteria": {"a": "b"}}}), "criteria"),
+    (q_with(criteria=["x"]), "criteria"),
+    (q_with(criteria={"maybe": "x"}), "criteria"),
+    (q_with(criteria={"true": "x", "other": "y"}), "criteria"),
+    (q_with(risk="yes"), "risk"),
+    (q_with(risk=1), "risk"),
+])
+def test_load_template_rejects_invalid(tmp_path, tpl, fragment):
+    write(tmp_path, tpl)
+    with pytest.raises(ValueError) as e:
+        load_template(tmp_path, "demo")
+    assert "demo.json" in str(e.value)
+    assert fragment in str(e.value)
+
+
+def test_load_template_rejects_non_object_and_bad_json(tmp_path):
+    write(tmp_path, [1, 2])
+    with pytest.raises(ValueError, match="demo.json"):
+        load_template(tmp_path, "demo")
+    (tmp_path / "factory" / "decisions" / "demo.json").write_text("{nope")
+    with pytest.raises(ValueError, match="demo.json"):
+        load_template(tmp_path, "demo")
+
+
+def test_load_template_accepts_null_per_item_and_score_bounds(tmp_path):
+    t = mutated(per_item=None)
+    t["questions"]["s2"] = {"type": "score", "instructions": "?", "criteria": list("abcdefghij")}
+    write(tmp_path, t)
+    assert load_template(tmp_path, "demo")["per_item"] is None
