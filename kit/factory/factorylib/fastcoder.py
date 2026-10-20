@@ -49,7 +49,15 @@ GATED_ROLES = ("fast-builder", "fast-fixer")
 # Inherited variables that would route the claude child away from OpenRouter.
 ROUTING_VARS = ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "ANTHROPIC_MODEL",
                 "ANTHROPIC_SMALL_FAST_MODEL", "CLAUDE_CODE_OAUTH_TOKEN",
-                "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL")
+                "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                # host-session auth handed down by Claude Desktop / the SDK
+                "CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH", "CLAUDE_CODE_MESSAGING_SOCKET",
+                "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_CODE_CHILD_SESSION")
+# The claude child's own config dir (under factory/, gitignored). A claude.ai
+# login stored in the user's ~/.claude takes precedence over
+# ANTHROPIC_AUTH_TOKEN and is never sent to a third-party base URL, so with
+# the shared config dir every OpenRouter request went out with no auth (401).
+FAST_CONFIG_DIR = ".fast-coder"
 
 _JOB_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
@@ -146,7 +154,9 @@ def child_env(cfg: dict, root: Path, key: str) -> dict:
 
     The claude child gets the key only as ``ANTHROPIC_AUTH_TOKEN`` and runs with
     ``CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1``, so the model's Bash and the hooks
-    never see it; inherited provider-routing variables are dropped. pi needs
+    never see it; inherited provider-routing variables are dropped, and it uses
+    its own ``CLAUDE_CONFIG_DIR`` so a stored claude.ai login cannot shadow the
+    token (sessions resume from the same dir). pi needs
     ``OPENROUTER_API_KEY`` itself.
     """
     fc = _fast(cfg)
@@ -159,7 +169,10 @@ def child_env(cfg: dict, root: Path, key: str) -> dict:
     env.pop(KEY_ENV, None)
     for name in ROUTING_VARS:
         env.pop(name, None)
+    config_dir = Path(root) / "factory" / FAST_CONFIG_DIR
+    config_dir.mkdir(mode=0o700, exist_ok=True)
     env.update({
+        "CLAUDE_CONFIG_DIR": str(config_dir),
         "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1",
         "ANTHROPIC_BASE_URL": OPENROUTER_BASE_URL,
         "ANTHROPIC_AUTH_TOKEN": key,

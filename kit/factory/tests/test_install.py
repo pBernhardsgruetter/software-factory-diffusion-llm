@@ -84,7 +84,7 @@ def test_install_ignores_bytecode_and_pytest_cache(tmp_path):
     assert r.returncode == 0, r.stderr
     lines = (repo / ".gitignore").read_text().splitlines()
     for line in ("/factory/jobs/", "/factory/.venv/", "/factory/tool-gate.jsonl",
-                 "/factory/**/__pycache__/", "/factory/.pytest_cache/"):
+                 "/factory/.fast-coder/", "/factory/**/__pycache__/", "/factory/.pytest_cache/"):
         assert lines.count(line) == 1, line
     # idempotent with --force
     assert install(repo, "--force").returncode == 0

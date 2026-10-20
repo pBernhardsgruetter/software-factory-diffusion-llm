@@ -538,3 +538,21 @@ def test_sigterm_kills_child_group(env):
     assert proc.returncode == 143
     rec = json.loads(out)
     assert rec["error"] == "killed" and rec["exit_code"] == 143
+
+
+def test_child_uses_its_own_config_dir(tmp_path, monkeypatch):
+    # A stored claude.ai login in the shared ~/.claude shadowed
+    # ANTHROPIC_AUTH_TOKEN and every OpenRouter call went out unauthenticated.
+    root = tmp_path / "app"
+    (root / "factory").mkdir(parents=True)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/home/someone/.claude")
+    monkeypatch.setenv("CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH", "1")
+    env_ = fastcoder.child_env({"fast_coder": {"model": "inception/mercury-3",
+                                              "harness": "claude-p"}}, root, "k")
+    cdir = root / "factory" / fastcoder.FAST_CONFIG_DIR
+    assert env_["CLAUDE_CONFIG_DIR"] == str(cdir) and cdir.is_dir()
+    assert (cdir.stat().st_mode & 0o777) == 0o700
+    assert "CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH" not in env_
+    # stable across calls, so --resume finds the session
+    assert fastcoder.child_env({"fast_coder": {"model": "m", "harness": "claude-p"}},
+                               root, "k")["CLAUDE_CONFIG_DIR"] == str(cdir)

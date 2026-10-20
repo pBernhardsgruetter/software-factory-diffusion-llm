@@ -94,14 +94,14 @@ if command -v rsync >/dev/null 2>&1; then
   if [ "$keep_backlog" -eq 1 ]; then extra+=(--exclude '/backlog.md'); fi
   rsync -a \
     --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' \
-    --exclude '/jobs' --exclude '/tool-gate.jsonl' ${extra[@]+"${extra[@]}"} \
+    --exclude '/jobs' --exclude '/tool-gate.jsonl' --exclude '/.fast-coder' ${extra[@]+"${extra[@]}"} \
     "$kit/factory/" "$target/factory/"
 else
   tar -C "$kit/.claude" -cf - . | tar -C "$target/.claude" -xf -
   if [ "$keep_backlog" -eq 1 ]; then extra+=(--exclude './backlog.md'); fi
   tar -C "$kit/factory" -cf - \
     --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' \
-    --exclude './jobs' --exclude './tool-gate.jsonl' ${extra[@]+"${extra[@]}"} . | tar -C "$target/factory" -xf -
+    --exclude './jobs' --exclude './tool-gate.jsonl' --exclude './.fast-coder' ${extra[@]+"${extra[@]}"} . | tar -C "$target/factory" -xf -
 fi
 
 chmod +x "$target"/factory/bin/* 2>/dev/null || true
@@ -110,7 +110,7 @@ gitignore="$target/.gitignore"
 touch "$gitignore"
 # Runtime state, caches and install backups must never dirty the main checkout:
 # the factory only merges into a clean one.
-for line in /factory/jobs/ /factory/.venv/ /factory/tool-gate.jsonl \
+for line in /factory/jobs/ /factory/.venv/ /factory/tool-gate.jsonl /factory/.fast-coder/ \
     '/factory/**/__pycache__/' /factory/.pytest_cache/ '/.claude/.factory-backup-*/'; do
   if ! grep -qxF "$line" "$gitignore"; then
     # make sure we start on a fresh line

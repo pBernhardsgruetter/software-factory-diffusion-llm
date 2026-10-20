@@ -5,3 +5,4 @@ __pycache__/
 spikes/s2-repo*/
 kit/factory/tool-gate.jsonl
 kit/factory/jobs/
+kit/factory/.fast-coder/
