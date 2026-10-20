@@ -19,7 +19,15 @@
     "vercel.json",
     "netlify.toml",
     "scripts/**",
-    "**/scripts/**"
+    "**/scripts/**",
+    "**/bun.lockb",
+    "**/Dockerfile.*",
+    "**/Containerfile",
+    "**/docker-compose*.yml",
+    "**/docker-compose*.yaml",
+    "**/compose*.yml",
+    "**/.github/**",
+    "**/compose*.yaml"
   ],
   "tool_allow": [
     {
@@ -206,6 +214,12 @@
     "factory/bin/**",
     "factory/policy.json",
     "factory/config.json",
-    "factory/factorylib/**"
+    "factory/factorylib/**",
+    ".husky/**",
+    ".mcp.json",
+    "CLAUDE.md",
+    "AGENTS.md",
+    "**/CLAUDE.md",
+    "**/AGENTS.md"
   ]
 }

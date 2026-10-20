@@ -581,3 +581,36 @@ def test_i2_third_scan_linear(policy, cmd):
     t = time.perf_counter()
     assert policy.classify_command(cmd, WT) in ("deny", "unknown")
     assert time.perf_counter() - t < 0.5
+
+
+# ------------------------------------------------------- final review (M1, M2)
+
+@pytest.mark.parametrize("path", [
+    "bun.lockb", "web/bun.lockb", "Dockerfile.dev", "svc/Dockerfile.prod", "Containerfile",
+    "svc/Containerfile", "docker-compose.yml", "docker-compose.override.yml",
+    "ops/docker-compose.prod.yaml", "compose.yml", "deploy/compose.prod.yml", "compose.yaml",
+    ".github/workflows/ci.yml", "pkg/.github/workflows/x.yml", "a/b/.github/CODEOWNERS",
+])
+def test_m1_more_escalations(policy, path):
+    assert policy.escalation_hits([path]) == [path]
+
+
+@pytest.mark.parametrize("path", ["src/compose.ts", "docs/dockerfiles.md", "src/bun.ts"])
+def test_m1_no_overreach(policy, path):
+    assert policy.escalation_hits([path]) == []
+
+
+@pytest.mark.parametrize("rel", [".husky/pre-commit", ".husky/_/husky.sh", ".mcp.json",
+                                 "CLAUDE.md", "AGENTS.md", "pkg/CLAUDE.md", "a/b/AGENTS.md",
+                                 "claude.md", "Agents.md"])
+def test_m2_more_guarded_paths(policy, tmp_path, rel):
+    wt, job = tmp_path / "wt", tmp_path / "job"
+    wt.mkdir(); job.mkdir()
+    assert policy.classify_path(str(wt / rel), wt, job) == "ask"
+
+
+@pytest.mark.parametrize("rel", ["docs/AGENTS.txt", "src/claude.ts", "mcp.json", "husky/x"])
+def test_m2_guarded_no_overreach(policy, tmp_path, rel):
+    wt, job = tmp_path / "wt", tmp_path / "job"
+    wt.mkdir(); job.mkdir()
+    assert policy.classify_path(str(wt / rel), wt, job) == "allow"
