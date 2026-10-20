@@ -19,10 +19,14 @@ installed into a target repo lives in `kit/`.
 scripts/install.sh <target-repo>
 ```
 
-This copies `kit/.claude` and `kit/factory` into the target (which must be a git
-repo) and adds `/factory/jobs/`, `/factory/.venv/` and `/factory/tool-gate.jsonl`
-to its `.gitignore`. It refuses to run if `<target>/factory` already exists; pass
-`--force` to overwrite the kit's files (an existing `factory/backlog.md` is kept).
+This copies `kit/.claude` and `kit/factory` into the target, which must be the
+top level of a git repo (a subdirectory is refused), and adds the factory's
+runtime state and caches to its `.gitignore`. It refuses to run if
+`<target>/factory` exists, or if it would overwrite `.claude/settings.json` or a
+same-named file in `.claude/agents/` or `.claude/skills/factory/`. Pass `--force`
+to overwrite: the replaced `.claude` files are first copied to
+`.claude/.factory-backup-<timestamp>/` (gitignored) so you can merge your own
+hooks and agents back. An existing `factory/backlog.md` is always kept.
 
 ## Docs
 
