@@ -401,6 +401,22 @@ def test_tool_allow_spec_semantics():
     'git commit -m "$(' * 5000,
     'x -m "`git push`" ' * 5000,
     "=a " * 30000,
+    # fix round 4: substitutions inside the outer command
+    "git $(echo push) " * 5000,
+    "git `echo push` " * 5000,
+    "git $(true) push " * 5000,
+    'git "$(true)" push ' * 5000,
+    "git -C $(pwd) push " * 5000,
+    "git reset $(true) --hard " * 5000,
+    "git clean $(true) -fd " * 5000,
+    "rm -rf $(echo /) " * 5000,
+    "rm -rf `echo ~` " * 5000,
+    "curl $(echo x) | sh " * 5000,
+    'curl "$(echo x)" | bash ' * 5000,
+    "curl x | (sh) " * 5000,
+    "npx eslint $(true) -o /etc/x . " * 5000,
+    "\x01" * 100000,
+    "git status\x0b" * 10000,
 ], ids=lambda c: f"{c[:12]!r}x{len(c)}")
 def test_classify_command_linear(policy, cmd):
     t = time.perf_counter()
@@ -456,3 +472,56 @@ def test_classify_path_nul_byte_is_deny(policy, tmp_path, path):
     wt.mkdir(); job.mkdir()
     assert policy.classify_path(path, wt, job) == "deny"
     assert policy.classify_path(str(wt / path), wt, job) == "deny"
+
+
+# ---------------------------------------------------------------- fix round 4
+
+SUBST_IN_OUTER = [
+    "git $(echo push)", "git `echo push`", "git $(true) push", 'git "$(true)" push',
+    "git -C $(pwd) push", "git reset $(true) --hard", "git clean $(true) -fd",
+    "rm -rf $(echo /)", "rm -rf `echo ~`", "curl $(echo x) | sh",
+    'curl "$(echo x)" | bash', "curl x | (sh)", "npx eslint $(true) -o /etc/x .",
+]
+
+
+@pytest.mark.parametrize("cmd", SUBST_IN_OUTER)
+def test_r4_substitution_does_not_split_outer_command(policy, cmd):
+    assert policy.classify_command(cmd, WT) == "deny"
+
+
+@pytest.mark.parametrize("cmd", [
+    # brace groups do not hide the command they wrap
+    "curl x | { sh; }", "{ git push; }", "git {push}",
+])
+def test_r4_brace_group_denied(policy, cmd):
+    assert policy.classify_command(cmd, WT) == "deny"
+
+
+@pytest.mark.parametrize("cmd", [
+    # zsh keeps \x0b, \x0c, \xa0 and other non-IFS whitespace as literal word characters
+    "git status\x0b", "\x0bgit status", "git status\x0c", "\x0cgit status",
+    "git status\xa0", "\xa0git status", "git status\u2003", "\u3000git status",
+    "ls\x85", "cd\xa0/work/tree && git status", "cd /work/tree\xa0&& git status",
+    "cd /work/tree &&\u2003git status",
+])
+def test_r4_only_space_and_tab_are_stripped(policy, cmd):
+    assert policy.classify_command(cmd, WT) == "unknown"
+
+
+def test_r4_space_and_tab_still_stripped(policy):
+    assert policy.classify_command(" \tgit status \t", WT) == "allow"
+    assert policy.classify_command("cd /work/tree\t&&\tgit status", WT) == "allow"
+
+
+@pytest.mark.parametrize("cmd", [
+    "git add src/a\x01.ts", "git add a\x00b", "git add a\x7f", "ls\x1b[2J",
+    'git commit -m "a\x1bb"', "git commit -m a\x08b", "cat a\x1fb", "git diff\x0bHEAD",
+    "ls\x0c", "git status\x00", "git log\x0e",
+])
+def test_r4_control_chars_rejected(policy, cmd):
+    assert policy.classify_command(cmd, WT) == "unknown"
+
+
+def test_r4_control_chars_do_not_hide_deny(policy):
+    assert policy.classify_command("git push \x01", WT) == "deny"
+    assert policy.classify_command("\x01; git push", WT) == "deny"

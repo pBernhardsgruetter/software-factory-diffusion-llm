@@ -32,9 +32,19 @@ _CLEAN = re.compile(r"^[$({`\"']+|[)}`\"';]+$")
 # A revision: no leading ``^`` (zsh extendedglob negation); trailing ``^`` only
 # (``HEAD^``, ``HEAD^^``), which is literal in zsh.
 _REV = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*\^*")
-# Command substitution / subshell delimiters become command separators, so the
-# contents of ``$(...)``, backticks and ``(...)`` are deny-scanned as commands.
+# Two deny scans around substitutions / subshells / brace groups; a command is
+# denied if EITHER fires (each is one linear ``str.translate`` + scan):
+# - _SUBST: delimiters become command separators, so the contents of ``$(...)``,
+#   backticks and ``(...)`` are scanned as commands of their own (this also
+#   reaches into ``-m`` messages).
+# - _SUBST_WS: delimiters become spaces, so the OUTER command stays whole
+#   (``git $(true) push``, ``rm -rf `echo ~```, ``curl x | (sh)``, ``{ sh; }``).
 _SUBST = str.maketrans({"`": ";", "(": ";", ")": ";"})
+_SUBST_WS = str.maketrans({"`": " ", "(": " ", ")": " ", "{": " ", "}": " "})
+# Control characters (everything below 0x20 except TAB and LF, plus DEL). zsh
+# keeps them as literal word characters; they are never part of an allowed
+# command.
+_CTRL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 _NUM = re.compile(r"[0-9]{1,6}")
 _FORCE = re.compile(r"-[a-zA-Z]*f[a-zA-Z]*")
 
@@ -201,7 +211,9 @@ class Policy:
         if worktree is None:
             return cmd
         wt = re.escape(str(worktree).rstrip("/") or "/")
-        m = re.match(rf"""\s*cd\s+(["']?){wt}/?\1\s*&&\s*""", cmd)
+        # Only space and tab separate words here (zsh IFS); ``\s`` would also
+        # accept \xa0, \x0b, ... which zsh keeps as literal characters.
+        m = re.match(rf"""[ \t]*cd[ \t]+(["']?){wt}/?\1[ \t]*&&[ \t]*""", cmd)
         return cmd[m.end():] if m else cmd
 
     def _denied(self, cmd: str, plain: bool) -> bool:
@@ -230,13 +242,17 @@ class Policy:
     ) -> Literal["allow", "deny", "unknown"]:
         # 1. Collapse space/tab runs so ``git  push`` / ``git<TAB>push`` cannot
         #    dodge matching.
-        cmd = re.sub(r"[ \t]+", " ", self._strip_cd(cmd, worktree)).strip()
+        #    Strip only space and tab: other whitespace is literal in zsh.
+        cmd = re.sub(r"[ \t]+", " ", self._strip_cd(cmd, worktree)).strip(" \t")
         # 2. Deny first, on shell-tokenised text (quotes and escapes removed).
         #    Over-long input uses a cheap plain split; it is rejected below anyway.
-        if self._denied(cmd.translate(_SUBST), plain=len(cmd) > _MAX_CMD):
+        plain = len(cmd) > _MAX_CMD
+        if self._denied(cmd.translate(_SUBST_WS), plain) or self._denied(
+            cmd.translate(_SUBST), plain
+        ):
             return "deny"
-        # 3. Only short, simple commands can be allowed.
-        if len(cmd) > _MAX_CMD or _COMPOUND.search(cmd):
+        # 3. Only short, simple commands without control characters can be allowed.
+        if len(cmd) > _MAX_CMD or _CTRL.search(cmd) or _COMPOUND.search(cmd):
             return "unknown"
         # 4. The one quoted form allowed: ``git commit -m MSG``.
         if _COMMIT.fullmatch(cmd):
