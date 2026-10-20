@@ -108,3 +108,13 @@ def test_readme_covers_usage_and_security_model():
                    "## Security model: guardrail, not a sandbox", "pi", "## End-to-end results",
                    "unsupported", "risk categories"):
         assert phrase in text, phrase
+
+
+def test_reviewer_ui_wording():
+    """Final review M3: decide runs from the main checkout; a failed call is not fatal."""
+    text = (AGENTS / "reviewer-ui.md").read_text()
+    head = text.split("---")[1]
+    assert "observations.json" in head and "decide visual" in head and "review-ui.md" in head
+    assert "your one file" not in text
+    assert "run it from the\nmain checkout, without the `cd`" in text
+    assert "exits non-zero or prints no record, continue\non your observations alone" in text
