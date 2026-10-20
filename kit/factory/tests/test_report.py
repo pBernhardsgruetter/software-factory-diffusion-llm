@@ -1,6 +1,6 @@
 import json
 
-from factorylib.report import build_report
+from factorylib.report import build_report, format_report
 
 
 def dec(name, route, *, ts, band="confident", model="m", error=None):
@@ -144,9 +144,9 @@ def test_error_records_not_paired_and_not_confident(tmp_path):
 
 
 def test_unsafe_miss_ignores_error_records(tmp_path):
-    write(tmp_path, "j1", [dec("toolgate", None, ts=t(1), band="uncertain", model=None, error="x"),
-                           out("toolgate", {"permission": "deny"}, ts=t(2))])
-    assert build_report(tmp_path)["toolgate"]["unsafe_misses"] == 0
+    write(tmp_path, "j1", [dec("triage", None, ts=t(1), band="uncertain", model=None, error="x"),
+                           out("triage", {"risks": ["auth"]}, ts=t(2))])
+    assert build_report(tmp_path)["triage"]["unsafe_misses"] == 0
 
 
 def test_na_band_skipped_in_coverage_but_paired(tmp_path):
@@ -189,10 +189,67 @@ def test_toolgate_log_counts_cases_and_coverage(tmp_path):
     assert r["agreement"] is None and r["ready"] is False
 
 
-def test_toolgate_unsafe_miss_from_outcome(tmp_path):
+def test_toolgate_pairing_unsupported_never_ready(tmp_path):
+    (tmp_path / "factory").mkdir(parents=True)
+    recs = [dec("toolgate", {"permission": "allow"}, ts=t(i % 50)) for i in range(30)]
+    (tmp_path / "factory" / "tool-gate.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in recs) + "\n")
+    # even with toolgate decisions and outcomes in a job file, it never pairs
     write(tmp_path, "j1", [dec("toolgate", {"permission": "allow"}, ts=t(1)),
-                           out("toolgate", {"permission": "ask"}, ts=t(2))])
-    assert build_report(tmp_path)["toolgate"]["unsafe_misses"] == 1
+                           out("toolgate", {"permission": "deny"}, ts=t(2))])
+    rep = build_report(tmp_path)
+    r = rep["toolgate"]
+    assert r["pairing"] == "unsupported" and r["unsafe_misses"] is None
+    assert r["ready"] is False and r["paired"] == 0 and r["agreement"] is None
+    assert r["cases"] == 31 and r["coverage"] == 1.0
+    assert build_report(tmp_path, min_cases=1)["toolgate"]["ready"] is False
+
+
+def test_other_decisions_pairing_supported(tmp_path):
+    write(tmp_path, "j1", [dec("triage", {"tier": "heavy", "risks": []}, ts=t(1))])
+    rep = build_report(tmp_path)
+    assert rep["triage"]["pairing"] == "supported"
+    assert rep["triage"]["unsafe_misses"] == 0
+
+
+def test_outcome_with_bad_ts_counted_as_skipped(tmp_path):
+    write(tmp_path, "j1", [
+        dec("promote", {"promote": True}, ts=t(1)),
+        {"kind": "outcome", "decision": "promote", "truth": {"promote": True}},
+        {"kind": "outcome", "decision": "promote", "truth": {"promote": True}, "ts": "nope"},
+    ])
+    rep = build_report(tmp_path)
+    assert rep["skipped_lines"] == 2 and rep["promote"]["paired"] == 0
+
+
+def test_unpaired_outcomes_counted(tmp_path):
+    write(tmp_path, "j1", [  # latest decision errored: outcome unpaired
+        dec("promote", {"promote": True}, ts=t(1)),
+        dec("promote", None, ts=t(2), band="uncertain", model=None, error="boom"),
+        out("promote", {"promote": True}, ts=t(3)),
+    ])
+    write(tmp_path, "j2", [out("promote", {"promote": True}, ts=t(3), job="j2")])  # no decision
+    write(tmp_path, "j3", [dec("promote", {"promote": True}, ts=t(1)),
+                           out("promote", {"promote": True}, ts=t(2), job="j3")])
+    write(tmp_path, "j4", [out("stuck", {"escalate": True}, ts=t(3), job="j4")])
+    rep = build_report(tmp_path)
+    assert rep["promote"]["paired"] == 1 and rep["promote"]["unpaired_outcomes"] == 2
+    assert rep["stuck"]["cases"] == 0 and rep["stuck"]["unpaired_outcomes"] == 1
+
+
+def test_text_table_unpaired_na_and_footnote(tmp_path):
+    (tmp_path / "factory").mkdir(parents=True)
+    (tmp_path / "factory" / "tool-gate.jsonl").write_text(
+        json.dumps(dec("toolgate", {"permission": "allow"}, ts=t(1))) + "\n")
+    write(tmp_path, "j1", [dec("promote", {"promote": True}, ts=t(1)),
+                           out("promote", {"promote": False}, ts=t(2))])
+    text = format_report(build_report(tmp_path))
+    lines = text.splitlines()
+    assert "unpaired" in lines[0].split()
+    row = next(ln for ln in lines if ln.startswith("toolgate"))
+    assert "n/a" in row.split()
+    assert "toolgate: no outcome source; stays shadow" in lines
+    assert lines[-1].startswith("skipped_lines:")
 
 
 def test_corrupt_lines_skipped_and_counted(tmp_path):

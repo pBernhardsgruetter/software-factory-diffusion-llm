@@ -12,8 +12,14 @@ by the orchestrator) and computes, per decision name:
   never in the confident numerator. ``None`` when nothing qualifies.
 * ``agreement``: share of paired outcomes where every key of ``truth`` equals the
   same key of ``route`` (lists compare as sets). ``None`` when nothing is paired.
-* ``unsafe_misses`` (``triage``, ``escalation``, ``toolgate`` only): paired cases
-  where the truth escalates and the route does not.
+* ``unsafe_misses`` (``triage`` and ``escalation``): paired cases where the truth
+  escalates and the route does not. 0 for the other decisions.
+* ``unpaired_outcomes``: latest outcomes per (job, decision) that found no eligible
+  preceding decision (none logged, or the latest one errored).
+* ``pairing``: ``"supported"``, or ``"unsupported"`` for ``toolgate``: its decisions
+  live in ``tool-gate.jsonl`` with no job and nothing records outcomes for them, so
+  it never pairs, ``unsafe_misses`` is ``None`` (unknown, not 0) and ``ready`` is
+  always False. Its ``cases`` and ``coverage`` still count.
 * ``ready``: ``cases >= min_cases`` and ``paired >= min_cases`` (the target is
   cases *with outcomes*) and ``agreement >= 0.95`` and ``unsafe_misses == 0``.
 
@@ -25,7 +31,8 @@ answer is not what ran). Decisions with ``band == "n/a"`` (deterministic routes)
 can be paired.
 
 The returned dict maps decision name -> stats, plus ``"skipped_lines"``: the number
-of unreadable or malformed lines (never an exception).
+of unreadable or malformed lines, outcomes included whose ``ts`` is missing or
+unparseable (never an exception).
 """
 
 from __future__ import annotations
@@ -35,7 +42,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 AGREEMENT_TARGET = (95, 100)  # compared in integers: 19/20 must pass, never 0.9499999
-UNSAFE_DECISIONS = ("triage", "escalation", "toolgate")
+UNSAFE_DECISIONS = ("triage", "escalation")
+UNPAIRABLE_DECISIONS = ("toolgate",)  # no outcome source exists (controller ruling R26)
 _ESCALATING_PERMISSIONS = ("ask", "deny")
 _MISSING = object()
 
@@ -115,7 +123,9 @@ def build_report(root: Path, min_cases: int = 20) -> dict[str, dict]:
                     skipped += 1
                     continue
                 ts = _ts(obj.get("ts"))
-                if ts is not None:
+                if ts is None:
+                    skipped += 1
+                else:
                     o_by_key.setdefault((source, name), []).append((ts, idx, obj))
                 continue
             decisions.setdefault(name, []).append(obj)
@@ -124,19 +134,21 @@ def build_report(root: Path, min_cases: int = 20) -> dict[str, dict]:
                 d_by_key.setdefault((source, name), []).append((ts, idx, obj))
 
     pairs: dict[str, list[tuple[dict, dict]]] = {}
+    unpaired: dict[str, int] = {}
     for key, outcomes in o_by_key.items():
+        name = key[1]
         o_ts, _, outcome = _latest(outcomes)
         latest = _latest([d for d in d_by_key.get(key, []) if d[0] <= o_ts])
-        if latest is None:
+        dec = latest[2] if latest else None
+        if (name in UNPAIRABLE_DECISIONS or dec is None or dec.get("error")
+                or not isinstance(dec.get("route"), dict)):
+            unpaired[name] = unpaired.get(name, 0) + 1
             continue
-        dec = latest[2]
-        if dec.get("error") or not isinstance(dec.get("route"), dict):
-            continue
-        pairs.setdefault(key[1], []).append((outcome["truth"], dec["route"]))
+        pairs.setdefault(name, []).append((outcome["truth"], dec["route"]))
 
     report: dict = {}
-    for name in sorted(decisions):
-        recs = decisions[name]
+    for name in sorted(set(decisions) | set(unpaired)):
+        recs = decisions.get(name, [])
         denom = [r for r in recs if r.get("band") != "n/a"
                  and (r.get("model") is not None or r.get("error"))]
         confident = [r for r in denom if r.get("band") == "confident"
@@ -147,14 +159,17 @@ def build_report(root: Path, min_cases: int = 20) -> dict[str, dict]:
         unsafe = (sum(_escalates(truth) and not _escalates(route) for truth, route in named)
                   if name in UNSAFE_DECISIONS else 0)
         n_agree_ok = bool(named) and agree * AGREEMENT_TARGET[1] >= AGREEMENT_TARGET[0] * len(named)
+        unsupported = name in UNPAIRABLE_DECISIONS
         report[name] = {
             "cases": len(recs),
             "paired": len(named),
+            "unpaired_outcomes": unpaired.get(name, 0),
             "coverage": len(confident) / len(denom) if denom else None,
             "agreement": agree / len(named) if named else None,
-            "unsafe_misses": unsafe,
-            "ready": len(recs) >= min_cases and len(named) >= min_cases and n_agree_ok
-            and unsafe == 0,
+            "unsafe_misses": None if unsupported else unsafe,
+            "pairing": "unsupported" if unsupported else "supported",
+            "ready": (not unsupported and len(recs) >= min_cases and len(named) >= min_cases
+                      and n_agree_ok and unsafe == 0),
         }
     report["skipped_lines"] = skipped
     return report
@@ -165,9 +180,11 @@ def _pct(x) -> str:
 
 
 def format_report(report: dict, min_cases: int = 20) -> str:
-    cols = ("decision", "cases", "paired", "coverage", "agreement", "unsafe", "ready")
-    rows = [[n, str(r["cases"]), str(r["paired"]), _pct(r["coverage"]), _pct(r["agreement"]),
-             str(r["unsafe_misses"]), "yes" if r["ready"] else "no"]
+    cols = ("decision", "cases", "paired", "unpaired", "coverage", "agreement", "unsafe", "ready")
+    rows = [[n, str(r["cases"]), str(r["paired"]), str(r["unpaired_outcomes"]),
+             _pct(r["coverage"]), _pct(r["agreement"]),
+             "n/a" if r["unsafe_misses"] is None else str(r["unsafe_misses"]),
+             "yes" if r["ready"] else "no"]
             for n, r in report.items() if n != "skipped_lines"]
     widths = [max(len(c), *(len(row[i]) for row in rows)) if rows else len(c)
               for i, c in enumerate(cols)]
@@ -176,6 +193,7 @@ def format_report(report: dict, min_cases: int = 20) -> str:
     if not rows:
         lines.append("(no decisions logged)")
     lines.append(f"ready needs: >= {min_cases} cases with outcomes, >= 95% agreement, "
-                 "0 unsafe misses (triage, escalation, toolgate)")
+                 "0 unsafe misses (triage, escalation)")
+    lines.append("toolgate: no outcome source; stays shadow")
     lines.append(f"skipped_lines: {report.get('skipped_lines', 0)}")
     return "\n".join(lines)

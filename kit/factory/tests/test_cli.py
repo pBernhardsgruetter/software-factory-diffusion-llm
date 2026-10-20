@@ -170,8 +170,8 @@ def test_cli_report(root, capsys):
     code, out, err = run(capsys, "report")
     assert code == 0 and err == ""
     lines = out.splitlines()
-    assert lines[0].split() == ["decision", "cases", "paired", "coverage", "agreement",
-                                "unsafe", "ready"]
+    assert lines[0].split() == ["decision", "cases", "paired", "unpaired", "coverage",
+                                "agreement", "unsafe", "ready"]
     assert lines[1].split()[:3] == ["promote", "1", "0"]
     assert lines[-1] == "skipped_lines: 0"
     code, out, err = run(capsys, "report", "--json", "--min-cases", "1")
