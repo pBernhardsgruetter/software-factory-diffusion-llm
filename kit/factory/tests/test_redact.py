@@ -86,3 +86,121 @@ def test_cap_text_odd_cap_head_tail_sum():
     assert len(head) == 5 and len(tail) == 6
     assert head == s[:5] and tail == s[-6:]
     assert "[truncated 89 chars]" in out
+
+
+# ---- fix round 1: broadened patterns ----
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "export OPENAI_API_KEY=abcd1234efgh",
+        "  API_KEY=abc12345",
+        "password: hunter2hunter2",
+        "PASSWORD=hunter2",
+        "KEY=abc",
+        "TOKEN=abc",
+        "SECRET=abc",
+        "db_credential = 'abcdefghij'",
+        "DB_PASSWD=short",
+    ],
+)
+def test_assignment_lines_redacted(line):
+    out, count = redact_obj(f"before\n{line}\nafter", [])
+    secret = line.strip().split("=")[-1].split(":")[-1].strip(" '")
+    assert secret not in out
+    assert "[REDACTED]" in out
+    assert "before" in out and "after" in out
+    assert count == 1
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["const tokenCount = 3", "  tokenCount = 3", "const apiKey = getKey();", "monkey = 1",
+     "key: 12", "if (token == null) return"],
+)
+def test_assignment_pattern_leaves_code_alone(text):
+    assert redact_obj(text, []) == (text, 0)
+
+
+@pytest.mark.parametrize(
+    "text, secret",
+    [
+        ('{"api_key": "sk_abcdefgh12345", "x": 1}', "sk_abcdefgh12345"),
+        ("{'auth_token': 'abcdefgh1234'}", "abcdefgh1234"),
+        ('  "client_secret":   "Zxcvbnm98765"', "Zxcvbnm98765"),
+    ],
+)
+def test_quoted_key_values_redacted(text, secret):
+    out, count = redact_obj(text, [])
+    assert secret not in out
+    assert "[REDACTED]" in out
+    assert count == 1
+
+
+def test_quoted_key_short_value_kept():
+    s = '{"api_key": "short", "name": "abcdefghijkl"}'
+    assert redact_obj(s, []) == (s, 0)
+
+
+@pytest.mark.parametrize(
+    "secret",
+    [
+        "sk_live_" + "aB3dE5gH7jK9mN1pQ",
+        "sk_test_" + "aB3dE5gH7jK9mN1pQ",
+        "gho_" + "a" * 36,
+        "ghs_" + "A1" * 20,
+        "ghu_" + "z" * 40,
+        "ghr_" + "z" * 36,
+        "xoxb-1234567890-abcdefghij",
+        "xoxp-1234567890-1234567890-abc",
+    ],
+)
+def test_new_token_formats(secret):
+    out, count = redact_obj(f"use {secret} now", [])
+    assert out == "use [REDACTED] now"
+    assert count == 1
+
+
+def test_bearer_token_redacted():
+    out, count = redact_obj("Authorization: Bearer abcdEFGH1234.ijkl_5678~+/=", [])
+    assert "abcdEFGH1234" not in out
+    assert count == 1
+    out, count = redact_obj("authorization: bearer " + JWT, [])
+    assert "eyJ" not in out and count == 1
+
+
+def test_url_userinfo_password_redacted():
+    out, count = redact_obj("clone https://alice:s3cretpw@github.com/org/repo.git", [])
+    assert "s3cretpw" not in out
+    assert "github.com/org/repo.git" in out
+    assert count == 1
+    out, count = redact_obj("postgres://user:pa55@db:5432/app", [])
+    assert "pa55" not in out and count == 1
+
+
+def test_url_without_credentials_untouched():
+    s = "see http://localhost:3000/a@b and https://example.com/x"
+    assert redact_obj(s, []) == (s, 0)
+
+
+def test_sk_left_boundary():
+    s = "disk-usage-monitoring-report-x"
+    assert redact_obj(s, []) == (s, 0)
+    out, count = redact_obj("key " + SK_OR + " and (sk-abcdefghijklmnopqrst)", [])
+    assert SK_OR not in out and "sk-abcdefghij" not in out
+    assert count == 2
+
+
+def test_bytes_and_bytearray_leaves_decoded_and_redacted():
+    out, count = redact_obj({"a": SK_OR.encode(), "b": [bytearray(b"x " + SK_OR.encode())]}, [])
+    assert out == {"a": "[REDACTED]", "b": ["x [REDACTED]"]}
+    assert count == 2
+    out, count = redact_obj(b"\xff\xfeplain", [])
+    assert isinstance(out, str) and out.endswith("plain") and count == 0
+
+
+def test_set_and_frozenset_walked_preserving_type():
+    out, count = redact_obj({"s": {SK_OR, "ok"}, "f": frozenset({SK_OR})}, [])
+    assert out["s"] == {"[REDACTED]", "ok"} and isinstance(out["s"], set)
+    assert out["f"] == frozenset({"[REDACTED]"}) and isinstance(out["f"], frozenset)
+    assert count == 2
