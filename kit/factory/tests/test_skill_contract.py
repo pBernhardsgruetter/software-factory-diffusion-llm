@@ -118,3 +118,12 @@ def test_reviewer_ui_wording():
     assert "your one file" not in text
     assert "run it from the\nmain checkout, without the `cd`" in text
     assert "exits non-zero or prints no record, continue\non your observations alone" in text
+
+
+def test_m4_review_commit_and_gate_description():
+    text = _skill()
+    assert "git -C" not in text
+    assert "`cd <worktree> && git rev-parse HEAD`" in text
+    assert "a PreToolUse hook on the Mercury 3 roles)" not in text
+    for phrase in ("main session", "subagents", "Mercury 3 roles"):
+        assert phrase in text[text.index("The tool gate"):][:600], phrase

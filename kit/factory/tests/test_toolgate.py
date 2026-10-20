@@ -1167,3 +1167,10 @@ def test_t11f3_logical_worktree_with_resolved_root_headless(tmp_path):
                  extra_env=env)
     perm, reason = hso(json.loads(r.stdout))
     assert perm == "deny" and "cwd is not a factory worktree" in reason
+
+
+def test_m4_orchestrator_review_commit_is_allowed(env):
+    root, wt, policy = env["root"], env["wt"], env["policy"]
+    out = gate(bash(f"cd {wt} && git rev-parse HEAD", root), root=root, policy=policy,
+               headless=False, decide=NoDecide())
+    assert hso(out)[0] == "allow"

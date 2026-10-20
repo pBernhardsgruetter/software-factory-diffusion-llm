@@ -84,10 +84,13 @@ on: outcomes never block a job. To check whether a decision ever ran for a job:
 
 Agents run two decisions themselves: the Opus `builder` runs `decide failure`
 (the fast tier has no key, so it never does) and `reviewer-ui` runs
-`decide visual`. You never run those. The tool gate
-(`factory/bin/tool-gate`, a PreToolUse hook on the Mercury 3 roles) asks System 1
-on its own. You never run that decision and record no outcome for it; it stays
-in shadow.
+`decide visual`. You never run those. The tool gate (`factory/bin/tool-gate`,
+a PreToolUse hook) gates Bash and file edits that reach into a job worktree from
+the main session and its subagents, and every call of the headless Mercury 3
+roles. For a command its rules don't cover it asks System 1 on its own (never for
+the Mercury 3 roles, which have no key). You never run that decision and record
+no outcome for it; it stays in shadow. Every in-scope call is logged to
+`factory/tool-gate.jsonl`.
 
 ### When a decide call fails
 
@@ -346,7 +349,7 @@ Read the first line of `build.md`.
    - any other round: run `factory/bin/decide rereview --job <job-id> 2>>factory/jobs/<job-id>/stderr.log` and take
      `apply.reviewers`. If it is empty, take all four.
 3. Set each selected reviewer's review to `pending` and every other one to
-   `skipped`. Run `git -C <worktree> rev-parse HEAD` and set
+   `skipped`. Run `cd <worktree> && git rev-parse HEAD` and set
    `review_commits[<reviewer>]` to that sha for each selected reviewer.
 4. Spawn the selected reviewers **in one message**, so they run in parallel. Each
    gets the prompt `<paths> Review round N.`, plus its port for `reviewer-ux`

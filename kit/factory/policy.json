@@ -117,6 +117,13 @@
     {
       "argv": [
         "git",
+        "rev-parse",
+        "HEAD"
+      ]
+    },
+    {
+      "argv": [
+        "git",
         "add"
       ],
       "paths": true,

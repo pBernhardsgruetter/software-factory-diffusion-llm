@@ -614,3 +614,15 @@ def test_m2_guarded_no_overreach(policy, tmp_path, rel):
     wt, job = tmp_path / "wt", tmp_path / "job"
     wt.mkdir(); job.mkdir()
     assert policy.classify_path(str(wt / rel), wt, job) == "allow"
+
+
+# ------------------------------------------------------- final review (M4)
+
+@pytest.mark.parametrize("cmd,expected", [
+    ("git rev-parse HEAD", "allow"), ("cd /work/tree && git rev-parse HEAD", "allow"),
+    ("git rev-parse", "unknown"), ("git rev-parse HEAD~1", "unknown"),
+    ("git rev-parse HEAD x", "unknown"), ("git rev-parse --show-toplevel", "unknown"),
+    ("git rev-parse --git-dir HEAD", "unknown"), ("git rev-parse main", "unknown"),
+])
+def test_m4_rev_parse_head_exactly(policy, cmd, expected):
+    assert policy.classify_command(cmd, WT) == expected
