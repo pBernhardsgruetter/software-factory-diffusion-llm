@@ -1,4 +1,4 @@
-"""PreToolUse hook: gate Bash, Edit and Write calls made in factory worktrees.
+"""PreToolUse hook: gate Bash, Edit, Write, MultiEdit and NotebookEdit in factory worktrees.
 
 Order: deterministic policy (deny / ask / allow), then for an ``unknown``
 command Mercury Decide D10 (``run_decision("toolgate", job=None, ...)``), whose
@@ -6,9 +6,16 @@ command Mercury Decide D10 (``run_decision("toolgate", job=None, ...)``), whose
 permission flow (print nothing, exit 0).
 
 Scope: always when headless (env ``FACTORY_HEADLESS=1``, the fast-coder
-children); otherwise only a Bash command starting ``cd <path> &&`` or an
-Edit/Write ``file_path`` that lies under ``<root>/../<root.name>-factory/``.
-Everything else (the user's own sessions) is out of scope and defers.
+children). In the main session only when the path in one of these lies under
+``<root>/../<root.name>-factory/``: a leading ``cd [-P|-L|--] <path>`` followed
+by ``&&`` or ``;`` (also inside a leading ``(`` subshell), any ``git -C <path>``,
+or an edit tool's ``file_path`` / ``notebook_path``. Everything else (the user's
+own sessions) is out of scope and defers.
+
+A worktree is the first directory below the factory dir that holds a ``.git``
+entry; anything else under the factory dir has no worktree (ask / deny).
+Headless, the worktree is the cwd's; a ``cd`` anywhere else, or a cwd outside
+the factory dir, needs a human (ruling R39).
 
 Never fail open (controller ruling R27a): Claude Code treats a hook that exits
 non-zero or prints garbage as non-blocking, so ``main`` ALWAYS exits 0 and, for
@@ -30,7 +37,7 @@ import signal
 import sys
 from pathlib import Path
 
-GATED_TOOLS = ("Bash", "Edit", "Write")
+GATED_TOOLS = ("Bash", "Edit", "Write", "MultiEdit", "NotebookEdit")
 TAG = "factory tool-gate: "
 NEEDS_HUMAN = "needs human: "
 SHOW_CHARS = 200  # command / path text quoted in a reason
@@ -38,11 +45,17 @@ SHOW_CHARS = 200  # command / path text quoted in a reason
 # timeout; a cold ``uv run`` start takes a few seconds and Decide at most 2 x 5 s.
 BUDGET_S = 20.0
 
-# ``cd <path> &&`` with a path the shell takes literally: double-quoted without
-# expansions, single-quoted, or bare without globs, ``~``, braces or operators.
+# A path the shell takes literally: double-quoted without expansions,
+# single-quoted, or bare without globs, ``~``, braces or operators.
+_PATH = r"""(?:"([^"$`\\!]*)"|'([^']*)'|([^\s;&|<>()`$"'\\~*?\[\]{}!#]+))"""
+# Leading ``[(] cd [-P|-L|--]... <path> (&&|;)``. Groups: 1 subshell, 2-4 path, 5 separator.
 _CD = re.compile(
-    r"""[ \t]*cd[ \t]+(?:"([^"$`\\!]*)"|'([^']*)'|([^\s;&|<>()`$"'\\~*?\[\]{}!#]+))"""
-    r"""[ \t]*&&[ \t]*"""
+    r"""[ \t]*(\([ \t]*)?cd(?:[ \t]+(?:-P|-L|--))*[ \t]+""" + _PATH + r"""[ \t]*(&&|;)[ \t]*"""
+)
+# ``git ... -C <path>`` anywhere in the command (scope only; groups 1-3 path).
+_GIT_C = re.compile(
+    r"""(?:^|[\s;&|(`])git[ \t]+(?:[^;&|\n`()]*?[ \t])?-C[ \t]*"""
+    r"""(?:"([^"]*)"|'([^']*)'|([^\s;&|<>()`'"]+))"""
 )
 
 
@@ -94,7 +107,9 @@ def _locate(p: str, cwd: Path, fdirs: list[Path]) -> tuple[bool, Path | None]:
 
     In scope when either the lexically normalised or the resolved path lies under
     the factory dir (fail closed on symlinks). The worktree is the first path
-    component below it, or ``None`` for the factory dir itself.
+    component below it when that is a real directory (not a symlink) holding a
+    ``.git`` entry; otherwise ``None`` (the factory dir itself, a stray file or
+    directory).
     """
     if not p or p.startswith("~") or "\0" in p:
         return False, None
@@ -109,8 +124,27 @@ def _locate(p: str, cwd: Path, fdirs: list[Path]) -> tuple[bool, Path | None]:
         for fd in fdirs:
             if c == fd or c.is_relative_to(fd):
                 parts = c.relative_to(fd).parts
-                return True, (base / parts[0]) if parts else None
+                return True, _worktree(base / parts[0]) if parts else None
     return False, None
+
+
+def _worktree(cand: Path) -> Path | None:
+    try:
+        if (not cand.is_symlink() and cand.is_dir()
+                and os.path.lexists(cand / ".git")):
+            return cand
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _within(a: str, cwd: Path, wt: Path) -> bool:
+    """``a`` (relative to ``cwd``) resolves to ``wt`` or a path inside it."""
+    try:
+        pa = Path(a) if os.path.isabs(a) else cwd / a
+        return pa.resolve().is_relative_to(wt.resolve())
+    except (OSError, RuntimeError, ValueError):
+        return False
 
 
 def _same(a: str, cwd: Path, b: Path) -> bool:
@@ -122,8 +156,18 @@ def _same(a: str, cwd: Path, b: Path) -> bool:
 
 
 class _Scope:
-    def __init__(self, tool: str, cwd: Path, worktree: Path | None, text: str, pcmd: str):
+    """``text``: the command / path as given; ``pcmd``: what the policy classifies;
+    ``problem``: why the call needs a human even when the policy would allow it."""
+
+    def __init__(self, tool: str, cwd: Path, worktree: Path | None, text: str, pcmd: str,
+                 problem: str | None = None):
         self.tool, self.cwd, self.worktree, self.text, self.pcmd = tool, cwd, worktree, text, pcmd
+        self.problem = problem if problem is not None else (
+            None if worktree is not None else "no factory worktree")
+
+
+def _first(groups) -> str:
+    return next(g for g in groups if g is not None)
 
 
 def _resolve(event, root: Path, headless: bool) -> _Scope | None:
@@ -153,21 +197,39 @@ def _resolve(event, root: Path, headless: bool) -> _Scope | None:
         if not isinstance(cmd, str):
             raise ValueError("Bash command missing or not a string")
         m = _CD.match(cmd)
+        target = _first(m.group(2, 3, 4)) if m else None
+        # Strip only ``cd <worktree> &&`` (any spelling resolving to exactly the
+        # worktree): after ``;`` or in a subshell the rest may run elsewhere.
+        strip = m is not None and m.group(1) is None and m.group(5) == "&&"
+
+        def rest(wt):
+            if strip and wt is not None and _same(target, cwd, wt):
+                return cmd[m.end():]
+            return cmd
+
+        if headless:
+            if cwd_wt is None:
+                return _Scope(tool, cwd, None, cmd, cmd, "cwd is not a factory worktree")
+            if m and not _within(target, cwd, cwd_wt):
+                return _Scope(tool, cwd, cwd_wt, cmd, cmd, "cd outside own worktree")
+            return _Scope(tool, cwd, cwd_wt, cmd, rest(cwd_wt))
         if m:
-            target = next(g for g in m.groups() if g is not None)
             inside, wt = _locate(target, cwd, fdirs)
             if inside:
-                # The policy strips only a literal ``cd <worktree> &&``; do it here
-                # for any spelling that resolves to exactly the worktree.
-                rest = cmd[m.end():] if wt is not None and _same(target, cwd, wt) else cmd
-                return _Scope(tool, cwd, wt, cmd, rest)
-        if not headless:
-            return None
-        return _Scope(tool, cwd, cwd_wt, cmd, cmd)
+                return _Scope(tool, cwd, wt, cmd, rest(wt))
+        for gm in _GIT_C.finditer(cmd):
+            inside, wt = _locate(_first(gm.groups()), cwd, fdirs)
+            if inside:
+                return _Scope(tool, cwd, wt, cmd, cmd)
+        return None
 
     fp = tin.get("file_path")
+    if not isinstance(fp, str) and tool == "NotebookEdit":
+        fp = tin.get("notebook_path")
     if not isinstance(fp, str) or not fp:
-        raise ValueError(f"{tool} file_path missing or not a string")
+        raise ValueError(f"{tool} file_path / notebook_path missing or not a string")
+    if "\0" in fp:
+        raise ValueError(f"{tool} path contains a NUL byte")
     inside, wt = _locate(fp, cwd, fdirs)
     if headless:
         wt = cwd_wt  # the child's worktree is its cwd
@@ -199,8 +261,8 @@ def _gate(event, root: Path, policy, headless: bool, decide) -> dict | None:
         return decision(permission, reason, headless=headless)
 
     if sc.tool != "Bash":
-        if sc.worktree is None:
-            return out("ask", f"no factory worktree for {sc.tool}: {show}")
+        if sc.problem is not None:
+            return out("ask", f"{sc.problem} for {sc.tool}: {show}")
         job_folder = Path(root) / "factory" / "jobs" / sc.worktree.name
         verdict = policy.classify_path(sc.pcmd, sc.worktree, job_folder)
         if verdict == "deny":
@@ -214,6 +276,8 @@ def _gate(event, root: Path, policy, headless: bool, decide) -> dict | None:
     verdict = policy.classify_command(sc.pcmd, sc.worktree)
     if verdict == "deny":
         return out("deny", f"policy deny: {show}")
+    if sc.problem is not None:
+        return out("ask", f"{sc.problem}: {show}")
     if verdict == "ask":
         return out("ask", f"policy ask: {show}")
     if verdict == "allow":
@@ -304,7 +368,11 @@ def main(stdin=None, stdout=None, env=None, root: Path | None = None, decide=Non
     """Read one PreToolUse event on stdin, print the decision (or nothing). Always 0."""
     headless = False
     out = None
+    real_stdout = stdout or sys.stdout
+    saved_stdout = sys.stdout
     try:
+        # Anything a module prints while the gate runs must not reach Claude Code.
+        sys.stdout = sys.stderr
         env = os.environ if env is None else env
         headless = env.get("FACTORY_HEADLESS") == "1"
         try:
@@ -319,9 +387,11 @@ def main(stdin=None, stdout=None, env=None, root: Path | None = None, decide=Non
             out = decision("ask", f"error: {_err(exc)}", headless=headless)
     except BaseException as exc:  # noqa: BLE001 (e.g. a late GateTimeout)
         out = decision("ask", f"error: {_err(exc)}", headless=headless)
+    finally:
+        sys.stdout = saved_stdout
     if out is not None:
         try:
-            stream = stdout or sys.stdout
+            stream = real_stdout
             stream.write(json.dumps(out))
             stream.flush()
         except BaseException:  # noqa: BLE001 (nothing more we can do; still exit 0)

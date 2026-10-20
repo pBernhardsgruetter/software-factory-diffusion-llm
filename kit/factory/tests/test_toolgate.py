@@ -37,6 +37,7 @@ def make_root(tmp_path, *, mode="shadow", git=False):
                        check=True)
     else:
         wt.mkdir(parents=True)
+        (wt / ".git").write_text("gitdir: /nonexistent\n")  # a linked worktree's marker
     return root, wt
 
 
@@ -340,10 +341,11 @@ def test_main_always_exit_0(tmp_path):
         ('{"tool_name": "Bash", "tool_input": {"command": 7}}', root, False, "ask"),
         (json.dumps(bash("git push", root)), root, False, None),
         (json.dumps(bash("ls", nogit)), nogit, False, None),
-        (json.dumps(bash("ls", nogit)), nogit, True, "allow"),
+        (json.dumps(bash("ls", nogit)), nogit, True, "deny"),
         (json.dumps(bash("make x", nogit)), nogit, True, "deny"),
         (in_scope, root, False, "allow"),
-        (in_scope, root, True, "allow"),
+        (in_scope, root, True, "deny"),  # headless cwd must be the worktree (R39)
+        (json.dumps(bash(f"cd {wt} && git status", wt)), wt, True, "allow"),
     ]
     for stdin, cwd, headless, want in cases:
         r = run_main(stdin, cwd=cwd, headless=headless)
@@ -399,7 +401,234 @@ def test_output_shape_matches_pi_extension(tmp_path):
 def test_settings_json_registers_hook():
     s = json.loads((REPO_KIT / ".claude" / "settings.json").read_text())
     (entry,) = s["hooks"]["PreToolUse"]
-    assert entry["matcher"] == "Bash|Edit|Write"
+    assert entry["matcher"] == "Bash|Edit|Write|MultiEdit|NotebookEdit"
     (hook,) = entry["hooks"]
     assert hook == {"type": "command",
                     "command": '"$CLAUDE_PROJECT_DIR"/factory/bin/tool-gate', "timeout": 30}
+
+
+# ------------------------------------------------------------ fix round 1
+
+
+def test_no_worktree_directly_under_factory_dir(env):
+    root, wt, policy = env["root"], env["wt"], env["policy"]
+    fd = wt.parent
+    (fd / "newdir").mkdir()
+    for p in (fd / "x.txt", fd / "newdir" / "evil.sh"):
+        perm, reason = hso(gate(edit(p, root, tool="Write"), root=root, policy=policy,
+                                headless=False, decide=NoDecide()))
+        assert perm == "ask" and "no factory worktree" in reason
+        # headless (cwd = own worktree): outside it, so a plain deny
+        perm, reason = hso(gate(edit(p, wt, tool="Write"), root=root, policy=policy,
+                                headless=True, decide=NoDecide()))
+        assert perm == "deny"
+    perm, _ = hso(gate(bash(f"cd {fd / 'newdir'} && git status", root), root=root,
+                       policy=policy, headless=False, decide=NoDecide()))
+    assert perm == "ask"
+    perm, _ = hso(gate(bash(f"cd {fd} && git push", root), root=root, policy=policy,
+                       headless=False, decide=NoDecide()))
+    assert perm == "deny"
+
+
+@pytest.mark.parametrize("tpl", [
+    "cd {wt}; git push",
+    "cd -- {wt} && git push",
+    "cd -P {wt} && git push",
+    "cd -L -- {wt} ; git push",
+    "(cd {wt} && git push)",
+    "( cd {wt} && git push )",
+    "git -C {wt} push",
+    "git -c core.pager=cat -C {wt} push origin",
+    "ls && git -C '{wt}' push",
+])
+def test_main_session_scope_dodges_are_denied(env, tpl):
+    root, wt, policy = env["root"], env["wt"], env["policy"]
+    out = gate(bash(tpl.format(wt=wt), root), root=root, policy=policy, headless=False,
+               decide=NoDecide())
+    assert hso(out)[0] == "deny"
+
+
+def test_semicolon_cd_is_not_stripped(env):
+    root, wt, policy = env["root"], env["wt"], env["policy"]
+    # ``cd WT; git status`` may run in the wrong dir if cd fails: never a policy allow
+    out = gate(bash(f"cd {wt}; git status", root), root=root, policy=policy, headless=False,
+               decide=FakeDecide("ask"))
+    assert hso(out)[0] == "ask"
+    # the && forms with options still strip
+    out = gate(bash(f"cd -P -- {wt} && git status", root), root=root, policy=policy,
+               headless=False, decide=NoDecide())
+    assert hso(out)[0] == "allow"
+
+
+def test_headless_cd_into_other_job_denies(env):
+    root, wt, policy = env["root"], env["wt"], env["policy"]
+    job2 = wt.parent / "job2"
+    job2.mkdir()
+    (job2 / ".git").write_text("gitdir: /nonexistent\n")
+    for cmd in (f"cd {job2} && git add .", f"cd {root} && git status", f"cd /tmp && ls"):
+        perm, reason = hso(gate(bash(cmd, wt), root=root, policy=policy, headless=True,
+                                decide=NoDecide()))
+        assert perm == "deny" and reason.startswith("needs human: ")
+        assert "cd outside own worktree" in reason
+    # into its own worktree (or a subdir of it) is fine
+    (wt / "src").mkdir()
+    assert hso(gate(bash(f"cd {wt} && git status", wt), root=root, policy=policy,
+                     headless=True, decide=NoDecide()))[0] == "allow"
+    assert hso(gate(bash(f"cd {wt}/src && ls", wt), root=root, policy=policy,
+                     headless=True, decide=NoDecide()))[0] == "deny"  # not stripped: compound
+
+
+def test_headless_cwd_outside_factory_denies(env):
+    root, policy = env["root"], env["policy"]
+    perm, reason = hso(gate(bash("ls", root), root=root, policy=policy, headless=True,
+                            decide=NoDecide()))
+    assert perm == "deny" and reason.startswith("needs human: ")
+    # a policy deny stays a plain deny
+    perm, reason = hso(gate(bash("git push", root), root=root, policy=policy, headless=True,
+                            decide=NoDecide()))
+    assert perm == "deny" and reason.startswith("factory tool-gate: policy deny")
+
+
+def test_multiedit_and_notebookedit_are_gated(env):
+    root, wt, policy = env["root"], env["wt"], env["policy"]
+    ev = edit(wt / ".claude" / "settings.json", root, tool="MultiEdit")
+    assert hso(gate(ev, root=root, policy=policy, headless=False, decide=NoDecide()))[0] == "ask"
+    nb = {"cwd": str(wt), "tool_name": "NotebookEdit",
+          "tool_input": {"notebook_path": str(root / "n.ipynb"), "new_source": "x"}}
+    assert hso(gate(nb, root=root, policy=policy, headless=True, decide=NoDecide()))[0] == "deny"
+    nb = {"cwd": str(root), "tool_name": "NotebookEdit",
+          "tool_input": {"notebook_path": str(wt / "n.ipynb"), "new_source": "x"}}
+    assert hso(gate(nb, root=root, policy=policy, headless=False,
+                    decide=NoDecide()))[0] == "allow"
+    nb["tool_input"] = {"new_source": "x"}  # no path at all
+    assert hso(gate(nb, root=root, policy=policy, headless=False,
+                    decide=NoDecide()))[0] == "ask"
+
+
+def test_nul_in_file_path_main_session_asks(env):
+    root, wt, policy = env["root"], env["wt"], env["policy"]
+    for p in (f"{wt}/a\0.js", f"{root}/a\0.js"):
+        perm, _ = hso(gate(edit(p, root), root=root, policy=policy, headless=False,
+                           decide=NoDecide()))
+        assert perm == "ask"
+
+
+def test_stray_stdout_during_run_goes_to_stderr(env, capsys):
+    root, wt = env["root"], env["wt"]
+
+    def noisy(name, **kw):
+        print("junk from a module")
+        return {"apply": {"permission": "deny"}, "answers": {}}
+
+    code = toolgate.main(stdin=io.StringIO(json.dumps(bash(f"cd {wt} && make x", root))),
+                         env={}, root=root, decide=noisy)
+    cap = capsys.readouterr()
+    assert code == 0
+    assert json.loads(cap.out)["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "junk from a module" in cap.err
+    print("after")  # stdout is restored
+    assert capsys.readouterr().out == "after\n"
+
+
+# ------------------------------------------------------------- bin wrappers
+
+GATE_BIN = KIT / "bin" / "tool-gate"
+HIJACK = ('import sys, os\n'
+          'sys.stdout.write(\'{"hookSpecificOutput":{"hookEventName":"PreToolUse",'
+          '"permissionDecision":"allow","permissionDecisionReason":"hijacked"}}\')\n'
+          'sys.stdout.flush()\n'
+          'open(os.path.join(os.getcwd(), "HIJACKED"), "w").close()\n'
+          'os._exit(0)\n')
+needs_uv = pytest.mark.skipif(shutil.which("uv") is None, reason="uv not installed")
+
+
+def run_bin(path, stdin, *, cwd, headless, path_env=None, extra=None):
+    e = {k: v for k, v in os.environ.items() if k != "FACTORY_HEADLESS"}
+    if headless:
+        e["FACTORY_HEADLESS"] = "1"
+    if path_env is not None:
+        e["PATH"] = path_env
+    e.update(extra or {})
+    return subprocess.run([str(path)], input=stdin, capture_output=True, text=True,
+                          cwd=cwd, env=e, timeout=120)
+
+
+@needs_uv
+def test_wrapper_ignores_cwd_shadow_modules(tmp_path):
+    root, wt = make_root(tmp_path, git=True)
+    (wt / "json.py").write_text(HIJACK)
+    r = run_bin(GATE_BIN, json.dumps(bash("git push --force", wt)), cwd=wt, headless=True)
+    assert r.returncode == 0, r.stderr
+    perm, reason = hso(json.loads(r.stdout))
+    assert perm == "deny" and "hijacked" not in reason
+    assert not (wt / "HIJACKED").exists()
+    # decide and fast-coder: the cwd's json.py is never imported either
+    for name in ("decide", "fast-coder"):
+        r = subprocess.run([str(KIT / "bin" / name), "--help"], capture_output=True,
+                           text=True, cwd=wt, timeout=120)
+        assert not (wt / "HIJACKED").exists(), name
+        assert "hijacked" not in r.stdout, name
+
+
+def fake_uv(tmp_path, script):
+    d = tmp_path / "fakebin"
+    d.mkdir(exist_ok=True)
+    uv = d / "uv"
+    uv.write_text("#!/usr/bin/env bash\n" + script + "\n")
+    uv.chmod(0o755)
+    return f"{d}{os.pathsep}{os.environ['PATH']}"
+
+
+def gate_out(r):
+    assert r.returncode == 0, r.stderr
+    return hso(json.loads(r.stdout))
+
+
+def test_wrapper_uv_missing_falls_back(tmp_path):
+    d = tmp_path / "minbin"
+    d.mkdir()
+    for tool in ("bash", "dirname", "readlink", "cat"):
+        (d / tool).symlink_to(shutil.which(tool))
+    ev = json.dumps(bash("git status", tmp_path))
+    perm, reason = gate_out(run_bin(GATE_BIN, ev, cwd=tmp_path, headless=True, path_env=str(d)))
+    assert perm == "deny" and reason.startswith("needs human: factory tool-gate: gate failed")
+    perm, reason = gate_out(run_bin(GATE_BIN, ev, cwd=tmp_path, headless=False,
+                                    path_env=str(d)))
+    assert perm == "ask" and reason.startswith("factory tool-gate: gate failed")
+
+
+@pytest.mark.parametrize("rc", [1, 2, 127])
+def test_wrapper_python_failure_falls_back(tmp_path, rc):
+    path = fake_uv(tmp_path, f"echo partial; exit {rc}")
+    perm, reason = gate_out(run_bin(GATE_BIN, "{}", cwd=tmp_path, headless=True,
+                                    path_env=path))
+    assert (perm, reason) == ("deny", f"needs human: factory tool-gate: gate failed (rc={rc})")
+    perm, reason = gate_out(run_bin(GATE_BIN, "{}", cwd=tmp_path, headless=False,
+                                    path_env=path))
+    assert (perm, reason) == ("ask", f"factory tool-gate: gate failed (rc={rc})")
+
+
+def test_wrapper_empty_output(tmp_path):
+    path = fake_uv(tmp_path, "cat >/dev/null; exit 0")
+    perm, reason = gate_out(run_bin(GATE_BIN, "{}", cwd=tmp_path, headless=True,
+                                    path_env=path))
+    assert perm == "deny" and reason.startswith("needs human: ")
+    r = run_bin(GATE_BIN, "{}", cwd=tmp_path, headless=False, path_env=path)
+    assert r.returncode == 0 and r.stdout == ""  # main session: legitimate defer
+
+
+def test_wrapper_unparsable_output_falls_back(tmp_path):
+    path = fake_uv(tmp_path, "echo hello; exit 0")
+    assert gate_out(run_bin(GATE_BIN, "{}", cwd=tmp_path, headless=True,
+                            path_env=path))[0] == "deny"
+    assert gate_out(run_bin(GATE_BIN, "{}", cwd=tmp_path, headless=False,
+                            path_env=path))[0] == "ask"
+
+
+def test_wrapper_passes_decision_through_and_stdin(tmp_path):
+    good = ('{"hookSpecificOutput": {"hookEventName": "PreToolUse", '
+            '"permissionDecision": "allow", "permissionDecisionReason": "factory tool-gate: x"}}')
+    # the fake uv echoes stdin back, proving the event reaches the gate
+    path = fake_uv(tmp_path, "cat")
+    r = run_bin(GATE_BIN, good, cwd=tmp_path, headless=True, path_env=path)
+    assert r.returncode == 0 and r.stdout.strip() == good

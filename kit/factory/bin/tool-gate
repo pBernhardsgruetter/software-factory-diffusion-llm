@@ -1,3 +1,38 @@
 #!/usr/bin/env bash
-set -euo pipefail
-exec uv run --quiet --project "$(dirname "$(readlink -f "$0")")/.." python -m factorylib.toolgate "$@"
+# PreToolUse hook: the factory tool gate (factorylib.toolgate).
+#
+# Never fails open (rulings R27a, R34): Claude Code treats a hook that exits
+# non-zero or prints non-JSON as non-blocking, so this wrapper ALWAYS exits 0.
+# If uv or Python fails, or the output is not a hook decision, it prints its own
+# decision: deny ("needs human: ...") headless (FACTORY_HEADLESS=1), ask in the
+# main session. Empty output with rc 0 is the gate's "defer"; headless it is
+# denied, since nothing legitimately defers there.
+# ``python -P``: never put the cwd (a job worktree) on sys.path (ruling R38).
+set -uo pipefail
+
+fallback() {
+  local perm=ask reason="factory tool-gate: $1"
+  if [ "${FACTORY_HEADLESS:-}" = "1" ]; then
+    perm=deny
+    reason="needs human: factory tool-gate: $1"
+  fi
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"%s","permissionDecisionReason":"%s"}}\n' \
+    "$perm" "$reason"
+  exit 0
+}
+
+here="$(dirname "$(readlink -f "$0")")" || fallback "gate failed (cannot locate wrapper)"
+command -v uv >/dev/null 2>&1 || fallback "gate failed (uv not found)"
+
+out="$(uv run --quiet --project "$here/.." python -P -m factorylib.toolgate "$@")"
+rc=$?
+[ "$rc" -eq 0 ] || fallback "gate failed (rc=$rc)"
+if [ -z "$out" ]; then
+  [ "${FACTORY_HEADLESS:-}" = "1" ] && fallback "gate failed (no decision)"
+  exit 0  # main session: defer to Claude Code's normal permission flow
+fi
+case "$out" in
+  '{"hookSpecificOutput"'*) printf '%s\n' "$out" ;;
+  *) fallback "gate failed (unparsable output)" ;;
+esac
+exit 0
