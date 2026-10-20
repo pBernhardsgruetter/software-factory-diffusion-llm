@@ -15,7 +15,7 @@ and sometimes a port. Use those exact values everywhere below.
 ## Rules
 
 - **Denied tool calls.** If a tool call is denied with a reason starting
-  `needs human:` or `factory tool-gate: policy deny`, stop. Write `build.md`
+  `needs human:`, `factory tool-gate: policy deny` or `factory tool-gate: path outside the worktree`, stop. Write `build.md`
   with `STATUS: BLOCKED` and quote the full reason under `## Blocked`. Do not
   try another way around it.
 

@@ -1052,6 +1052,19 @@ def test_i7_reason_is_redacted(env):
     assert secret not in json.dumps(rec) and "[REDACTED]" in rec["reason"]
 
 
+def test_i7_secret_straddling_the_cap_leaves_no_fragment(env):
+    # R20: the quoted text is redacted in full before the 200-char cut, so a
+    # token cut at the boundary never survives as a too-short-to-match tail.
+    root, wt = env["root"], env["wt"]
+    tok = lambda c: "ghp_" + (c * 36)
+    lead = " ".join(tok(c) for c in "ABCD")
+    cmd = "echo " + lead + " " + "x" * (200 - len("echo " + lead + " ") - 10) + " " + tok("Z")
+    out = main_once(bash(cmd, wt), root, headless=True)
+    (rec,) = gate_log(root)
+    assert "ZZZZZZ" not in rec["reason"] and "ZZZZZZ" not in out
+    assert "AAAAAA" not in out
+
+
 def test_i7_config_redact_patterns_apply(env):
     root, wt = env["root"], env["wt"]
     cfg = json.loads((root / "factory" / "config.json").read_text())

@@ -87,9 +87,32 @@ def _mod(name: str):
     return importlib.import_module(f"{__package__ or 'factorylib'}.{name}")
 
 
+def _redact_text(text: str, root=None) -> str:
+    """Redact ``text`` in full (built-in plus the root's configured
+    ``redact_patterns``) so a later cut never leaves a secret fragment that is
+    too short to match (R20: redaction before the cap)."""
+    redact_obj = _mod("redact").redact_obj
+    if root is not None:
+        try:
+            cfg = json.loads((Path(root) / "factory" / "config.json").read_text())
+            patterns = [x for x in cfg.get("redact_patterns") or [] if isinstance(x, str)]
+            return redact_obj(str(text), patterns)[0]
+        except Exception:  # unreadable config or a bad configured pattern
+            pass
+    return redact_obj(str(text), [])[0]
+
+
+def _show(text: str, root=None) -> str:
+    """Redacted, then capped, text for a reason; fails safe to a placeholder."""
+    try:
+        return _redact_text(text, root)[:SHOW_CHARS]
+    except Exception:  # redaction module unavailable
+        return "[text withheld]"
+
+
 def _err(exc: BaseException) -> str:
     try:
-        return f"{type(exc).__name__}: {str(exc)[:SHOW_CHARS]}"
+        return f"{type(exc).__name__}: {_show(str(exc))}"
     except Exception:  # an exception whose __str__ raises
         return "unprintable exception"
 
@@ -328,7 +351,7 @@ def _gate(event, root: Path, policy, headless: bool, decide, roots, meta: dict) 
     if sc is None:
         return None
     meta["job"] = sc.worktree.name if sc.worktree is not None else None
-    show = sc.text[:SHOW_CHARS]
+    show = _show(sc.text, root)
 
     def out(permission, reason, source="policy"):
         meta["source"] = source
@@ -532,14 +555,7 @@ def _audit(out: dict | None, meta: dict, headless: bool) -> None:
             perm, reason = h["permissionDecision"], h["permissionDecisionReason"]
         else:
             perm, reason = "defer", meta.get("reason") or "defer"
-        redact_obj = _mod("redact").redact_obj
-        patterns: list = []
-        try:
-            cfg = json.loads((Path(root) / "factory" / "config.json").read_text())
-            patterns = [x for x in cfg.get("redact_patterns") or [] if isinstance(x, str)]
-            reason = redact_obj(str(reason), patterns)[0]
-        except Exception:  # unreadable config or a bad configured pattern
-            reason = redact_obj(str(reason), [])[0]
+        reason = _redact_text(reason, root)  # quoted text was redacted before its cut
         rec = {"kind": "gate",
                "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
                "headless": headless, "tool": meta.get("tool"), "permission": perm,
