@@ -47,7 +47,9 @@ Run each `agent-browser` call as its own Bash command that starts with
 chained or variable-built command is denied.
 Don't sign in or submit forms: the dev
 server may talk to real services. When you're done, run
-`agent-browser --session <job-id>-ux close` and stop the dev server.
+`agent-browser --session <job-id>-ux close` and stop the dev server: get its PID with
+`lsof -ti tcp:<port> -sTCP:LISTEN`, then run `kill <pid>`, as two separate
+commands (not `pkill`).
 
 ## What to look for
 

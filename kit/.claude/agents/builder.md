@@ -82,7 +82,8 @@ command you ran and its result, or what the page showed.
   `agent-browser skills get core` first to learn it). Pass
   `--session <job-id>-builder` on every `agent-browser` call, so other jobs
   never drive your browser. Close it with
-  `agent-browser --session <job-id>-builder close` and stop the dev server when
+  `agent-browser --session <job-id>-builder close` and stop the dev server (PID
+  from `lsof -ti tcp:<port> -sTCP:LISTEN`, then `kill <pid>`, not `pkill`) when
   you're done.
 
 ## Commit

@@ -55,7 +55,9 @@ Save the screenshots as `<job folder>/round-<N>/ui-1280.png` (desktop) and
 `agent-browser --session <job-id>-ui set viewport <w> <h>` and passing the path
 to `agent-browser screenshot`.
 Don't sign in or submit forms. When you're done, run
-`agent-browser --session <job-id>-ui close` and stop the dev server.
+`agent-browser --session <job-id>-ui close` and stop the dev server: get its PID with
+`lsof -ti tcp:<port> -sTCP:LISTEN`, then run `kill <pid>`, as two separate
+commands (not `pkill`).
 
 ## Observations and the visual decision
 
