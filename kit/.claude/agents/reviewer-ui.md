@@ -40,6 +40,10 @@ AGENTS.md in the worktree, in the background, on your port.
 Then use the `agent-browser` CLI (run `agent-browser skills get core` first) to
 screenshot the page at desktop and phone widths. Pass `--session <job-id>-ui` on
 every `agent-browser` call, so other jobs' reviewers never drive your browser.
+Run each `agent-browser` call as its own Bash command that starts with
+`agent-browser` and spells out every value: no `cd`, no shell variables, no
+`;` or `&&` chains. Permission rules match on the command's prefix, so a
+chained or variable-built command is denied.
 Save the screenshots as `<job folder>/round-<N>/ui-1280.png` (desktop) and
 `<job folder>/round-<N>/ui-375.png` (phone), setting the width with
 `agent-browser --session <job-id>-ui set viewport <w> <h>` and passing the path

@@ -13,7 +13,8 @@ file, `<job folder>/round-<N>/review-ux.md`. You never edit code or any other fi
 
 Your prompt gives the job's worktree: a checkout of the job branch outside the
 main checkout you start in. The shell returns to the main checkout after every
-command, so start every Bash command with `cd <worktree> && `, and give Read,
+command, so start every Bash command that works on the branch (git, the dev
+server) with `cd <worktree> && `, and give Read,
 Grep and Glob absolute paths under the worktree. The job folder is in the main
 checkout; your one file goes there.
 
@@ -33,7 +34,12 @@ server from AGENTS.md in the worktree, in the background, on your port.
 
 Then use the `agent-browser` CLI (run `agent-browser skills get core` first).
 Pass `--session <job-id>-ux` on every `agent-browser` call, so other jobs'
-reviewers never drive your browser. Don't sign in or submit forms: the dev
+reviewers never drive your browser.
+Run each `agent-browser` call as its own Bash command that starts with
+`agent-browser` and spells out every value: no `cd`, no shell variables, no
+`;` or `&&` chains. Permission rules match on the command's prefix, so a
+chained or variable-built command is denied.
+Don't sign in or submit forms: the dev
 server may talk to real services. When you're done, run
 `agent-browser --session <job-id>-ux close` and stop the dev server.
 
