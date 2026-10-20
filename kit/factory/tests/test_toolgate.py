@@ -567,12 +567,17 @@ def run_bin(path, stdin, *, cwd, headless, path_env=None, extra=None):
 @pytest.mark.parametrize("pythonpath", [None, ":", ".", ":/usr/lib"])
 def test_wrapper_ignores_cwd_shadow_modules(tmp_path, pythonpath):
     root, wt = make_root(tmp_path, git=True)
+    # run an installed copy: the kit's own gate would log into the source tree
+    shutil.copytree(KIT / "bin", root / "factory" / "bin")
+    for name in ("pyproject.toml", "uv.lock"):
+        shutil.copy(KIT / name, root / "factory" / name)
+    gate_bin = root / "factory" / "bin" / "tool-gate"
     (wt / "json.py").write_text(HIJACK)
     extra = {} if pythonpath is None else {"PYTHONPATH": pythonpath}
     for headless, cwd in ((True, wt), (False, wt), (False, root)):
         if cwd == root:
             (root / "json.py").write_text(HIJACK)
-        r = run_bin(GATE_BIN, json.dumps(bash(f"cd {wt} && git push --force", cwd)), cwd=cwd,
+        r = run_bin(gate_bin, json.dumps(bash(f"cd {wt} && git push --force", cwd)), cwd=cwd,
                     headless=headless, extra=extra)
         assert r.returncode == 0, r.stderr
         assert "hijacked" not in r.stdout, (headless, cwd)

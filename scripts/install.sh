@@ -94,14 +94,14 @@ if command -v rsync >/dev/null 2>&1; then
   if [ "$keep_backlog" -eq 1 ]; then extra+=(--exclude '/backlog.md'); fi
   rsync -a \
     --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' \
-    --exclude '/jobs' ${extra[@]+"${extra[@]}"} \
+    --exclude '/jobs' --exclude '/tool-gate.jsonl' ${extra[@]+"${extra[@]}"} \
     "$kit/factory/" "$target/factory/"
 else
   tar -C "$kit/.claude" -cf - . | tar -C "$target/.claude" -xf -
   if [ "$keep_backlog" -eq 1 ]; then extra+=(--exclude './backlog.md'); fi
   tar -C "$kit/factory" -cf - \
     --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' \
-    --exclude './jobs' ${extra[@]+"${extra[@]}"} . | tar -C "$target/factory" -xf -
+    --exclude './jobs' --exclude './tool-gate.jsonl' ${extra[@]+"${extra[@]}"} . | tar -C "$target/factory" -xf -
 fi
 
 chmod +x "$target"/factory/bin/* 2>/dev/null || true

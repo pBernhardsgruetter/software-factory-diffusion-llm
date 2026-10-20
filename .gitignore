@@ -3,3 +3,5 @@ kit/factory/.venv/
 __pycache__/
 .pytest_cache/
 spikes/s2-repo*/
+kit/factory/tool-gate.jsonl
+kit/factory/jobs/
