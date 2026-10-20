@@ -1088,3 +1088,77 @@ def test_i7_main_subprocess_logs(tmp_path):
     assert hso(json.loads(r.stdout))[0] == "allow"
     (rec,) = gate_log(root)
     assert rec["source"] == "policy" and rec["job"] == "001-x"
+
+
+# ------------------------------------------------------------------ T11-F3
+
+
+def test_t11f3_symlinked_worktree_session_uses_main_policy(tmp_path):
+    root, wt = make_root(tmp_path)
+    # the worktree's own committed kit copy, with a permissive policy
+    shutil.copytree(KIT / "factorylib", wt / "factory" / "factorylib",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    pol = json.loads((KIT / "policy.json").read_text())
+    pol["tool_allow"].append({"argv": ["make"], "paths": True})
+    (wt / "factory" / "policy.json").write_text(json.dumps(pol))
+    wlink = tmp_path / "wlink"
+    wlink.symlink_to(wt)
+    ev = json.dumps(bash("cd . && make x", wlink))
+    env = {"FACTORY_GATE_ROOT": str(wlink), "OPENROUTER_API_KEY": ""}
+    r = run_main(ev, root=root, cwd=wlink, headless=True, pkg=wlink / "factory",
+                 extra_env=env)
+    assert r.returncode == 0, r.stderr
+    perm, reason = hso(json.loads(r.stdout))
+    assert perm == "deny" and "command not on allowlist" in reason
+    r = run_main(ev, root=root, cwd=wlink, pkg=wlink / "factory", extra_env=env)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout == "" or hso(json.loads(r.stdout))[0] != "allow"
+    # the main checkout supplied the policy and gets the log
+    assert (root / "factory" / "tool-gate.jsonl").is_file()
+    assert not (wt / "factory" / "tool-gate.jsonl").exists()
+    assert toolgate_roots_of(wlink, wt) == [root]
+
+
+def toolgate_roots_of(logical, wt):
+    code = ("import json, sys; from factorylib import toolgate; "
+            "print(json.dumps([str(r) for r in toolgate.gate_roots("
+            "{'FACTORY_GATE_ROOT': sys.argv[1]})]))")
+    e = {k: v for k, v in os.environ.items() if k != "FACTORY_GATE_ROOT"}
+    e["PYTHONPATH"] = str(logical / "factory")
+    r = subprocess.run([sys.executable, "-c", code, str(logical)], capture_output=True,
+                       text=True, env=e, cwd=wt, timeout=60)
+    assert r.returncode == 0, r.stderr
+    return [Path(x) for x in json.loads(r.stdout)]
+
+
+def test_t11f3_logical_worktree_with_resolved_root_headless(tmp_path):
+    root, _ = make_root(tmp_path / "real")  # real/main
+    link = tmp_path / "applink"
+    link.symlink_to(root)
+    wt = tmp_path / "applink-factory" / "001-x"  # the SKILL's logical-pwd worktree
+    wt.mkdir(parents=True)
+    (wt / ".git").write_text("gitdir: /nonexistent\n")
+    # fast-coder hooks the RESOLVED root; the child's cwd is the logical worktree
+    env = {"FACTORY_GATE_ROOT": str(root)}
+    r = run_main(json.dumps(bash("git status", wt)), root=root, cwd=wt, headless=True,
+                 extra_env=env)
+    assert r.returncode == 0, r.stderr
+    perm, reason = hso(json.loads(r.stdout))
+    assert perm == "allow", reason
+    job = root / "factory" / "jobs" / "001-x"
+    r = run_main(json.dumps(edit(job / "build.md", wt, tool="Write")), root=root, cwd=wt,
+                 headless=True, extra_env=env)
+    assert hso(json.loads(r.stdout))[0] == "allow"
+    # still fail closed: a push from there is denied, and an unrelated *-factory dir
+    # (its sibling is not this root) stays out of the worktree scope
+    r = run_main(json.dumps(bash("git push", wt)), root=root, cwd=wt, headless=True,
+                 extra_env=env)
+    assert hso(json.loads(r.stdout))[0] == "deny"
+    other = tmp_path / "other-factory" / "001-x"
+    other.mkdir(parents=True)
+    (other / ".git").write_text("gitdir: /nonexistent\n")
+    (tmp_path / "other").mkdir()
+    r = run_main(json.dumps(bash("git status", other)), root=root, cwd=other, headless=True,
+                 extra_env=env)
+    perm, reason = hso(json.loads(r.stdout))
+    assert perm == "deny" and "cwd is not a factory worktree" in reason

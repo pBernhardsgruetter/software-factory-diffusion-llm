@@ -135,7 +135,8 @@ def _try_resolve(p: Path) -> Path | None:
         return None
 
 
-def _locate(p: str, cwd: Path, fdirs: list[Path]) -> tuple[bool, Path | None]:
+def _locate(p: str, cwd: Path, fdirs: list[Path],
+            real_roots: tuple = ()) -> tuple[bool, Path | None]:
     """``(under_factory_dir, worktree)`` for path text ``p`` (relative to ``cwd``).
 
     In scope when either the lexically normalised or the resolved path lies under
@@ -143,6 +144,11 @@ def _locate(p: str, cwd: Path, fdirs: list[Path]) -> tuple[bool, Path | None]:
     component below it when that is a real directory (not a symlink) holding a
     ``.git`` entry; otherwise ``None`` (the factory dir itself, a stray file or
     directory).
+
+    A factory dir is also any ancestor ``<x>-factory`` whose sibling ``<x>``
+    resolves to one of ``real_roots`` (the roots' realpaths): the logical and the
+    resolved form of a symlinked repo dir name the same factory, whichever form
+    the gate was started with (T11-F3).
     """
     if not p or p.startswith("~") or "\0" in p:
         return False, None
@@ -157,6 +163,14 @@ def _locate(p: str, cwd: Path, fdirs: list[Path]) -> tuple[bool, Path | None]:
             if c == fd or c.is_relative_to(fd):
                 parts = c.relative_to(fd).parts
                 return True, _worktree(fd / parts[0]) if parts else None
+    if real_roots:
+        for c in cands:
+            for fd in (c, *c.parents):
+                name = fd.name
+                if (name.endswith(_SUFFIX) and len(name) > len(_SUFFIX)
+                        and _try_resolve(fd.parent / name[: -len(_SUFFIX)]) in real_roots):
+                    parts = c.relative_to(fd).parts
+                    return True, _worktree(fd / parts[0]) if parts else None
     return False, None
 
 
@@ -220,7 +234,8 @@ def _resolve(event, root: Path, headless: bool, roots: list[Path] | None = None)
     raw_cwd = event.get("cwd")
     cwd = Path(raw_cwd) if isinstance(raw_cwd, str) and os.path.isabs(raw_cwd) else Path.cwd()
     fdirs = _factory_dirs(roots or [root])
-    cwd_in, cwd_wt = _locate(str(cwd), cwd, fdirs)
+    real_roots = tuple(r for r in map(_try_resolve, roots or [root]) if r is not None)
+    cwd_in, cwd_wt = _locate(str(cwd), cwd, fdirs, real_roots)
     if not cwd_in:
         cwd_wt = None
 
@@ -246,12 +261,12 @@ def _resolve(event, root: Path, headless: bool, roots: list[Path] | None = None)
                 return _Scope(tool, cwd, cwd_wt, cmd, cmd, "cd outside own worktree")
             return _Scope(tool, cwd, cwd_wt, cmd, rest(cwd_wt))
         if m:
-            inside, wt = _locate(target, cwd, fdirs)
+            inside, wt = _locate(target, cwd, fdirs, real_roots)
             if inside:
                 return _Scope(tool, cwd, wt, cmd, rest(wt))
         if len(cmd) <= _SCOPE_MAX:
             for gm in _GIT_C.finditer(cmd):
-                inside, wt = _locate(_first(gm.groups()), cwd, fdirs)
+                inside, wt = _locate(_first(gm.groups()), cwd, fdirs, real_roots)
                 if inside:
                     return _Scope(tool, cwd, wt, cmd, cmd)
         return None
@@ -263,7 +278,7 @@ def _resolve(event, root: Path, headless: bool, roots: list[Path] | None = None)
         raise ValueError(f"{tool} file_path / notebook_path missing or not a string")
     if "\0" in fp:
         raise ValueError(f"{tool} path contains a NUL byte")
-    inside, wt = _locate(fp, cwd, fdirs)
+    inside, wt = _locate(fp, cwd, fdirs, real_roots)
     if headless:
         wt = cwd_wt  # the child's worktree is its cwd
     elif not inside:
@@ -421,11 +436,17 @@ def _main_of(r: Path) -> Path:
 
 
 def gate_roots(env) -> list[Path]:
-    """The roots this gate serves, primary first.
+    """The roots this gate serves, primary first (the primary supplies the policy).
 
     The wrapper's LOGICAL root ``FACTORY_GATE_ROOT`` (absolute, and
     ``<it>/factory/factorylib/toolgate.py`` must be this very file, so an
     inherited value cannot redirect the gate), then the self-located one.
+
+    Each is mapped through ``_main_of`` in its given and its resolved form. When
+    either form is a job worktree whose main checkout exists, that main checkout
+    replaces the root and comes FIRST: a session opened through a symlink to a
+    worktree (``~/wlink -> app-factory/001-d``) must never load the worktree's
+    own ``policy.json`` (T11-F3).
     """
     roots: list[Path] = []
     raw = env.get("FACTORY_GATE_ROOT") or ""
@@ -437,9 +458,19 @@ def gate_roots(env) -> list[Path]:
         except (OSError, ValueError):
             pass
     roots.append(self_root())
-    out: list[Path] = []
+    mains: list[Path] = []
+    plain: list[Path] = []
     for r in roots:
         m = _main_of(r)
+        if m == r:
+            rr = _try_resolve(r)
+            if rr is not None and rr != r:
+                m2 = _main_of(rr)
+                if m2 != rr:
+                    m = m2  # r is an alias of a job worktree
+        (mains if m != r else plain).append(m)
+    out: list[Path] = []
+    for m in mains + plain:
         if m not in out:
             out.append(m)
     return out
