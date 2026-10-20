@@ -1,0 +1,21 @@
+{
+  "id": "D6",
+  "name": "finding",
+  "questions": {},
+  "per_item": {
+    "state_key": "findings",
+    "prefix": "f",
+    "question": {
+      "type": "boolean",
+      "instructions": "Is fixing this review finding a purely mechanical edit that needs no design judgment?",
+      "criteria": {
+        "true": "A rename, formatting, typo, import or similarly local and obvious change.",
+        "false": "The fix needs reasoning, design choices or changes across several places."
+      }
+    }
+  },
+  "fallback": {
+    "fast_fixer": [],
+    "builder": "all"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "id": "D3",
+  "name": "assumptions",
+  "questions": {},
+  "per_item": {
+    "state_key": "assumptions",
+    "prefix": "a",
+    "question": {
+      "type": "boolean",
+      "instructions": "Is this assumption a product decision that a human should make rather than an implementation detail?",
+      "criteria": {
+        "true": "It sets product behavior, scope, policy or user-visible trade-offs.",
+        "false": "It is a technical detail the implementer can decide."
+      }
+    }
+  },
+  "fallback": {
+    "ask_human": []
+  }
+}

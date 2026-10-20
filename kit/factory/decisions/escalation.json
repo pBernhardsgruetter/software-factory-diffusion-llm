@@ -1,0 +1,51 @@
+{
+  "id": "D9",
+  "name": "escalation",
+  "questions": {
+    "auth": {
+      "type": "boolean",
+      "instructions": "Does this change touch authentication, authorization, permissions or user sessions?",
+      "risk": true
+    },
+    "payments": {
+      "type": "boolean",
+      "instructions": "Does this change touch billing, charges, refunds or a payment provider?",
+      "risk": true
+    },
+    "dependencies": {
+      "type": "boolean",
+      "instructions": "Does this change add, remove or upgrade a third-party dependency or lockfile entry?",
+      "risk": true
+    },
+    "ci_deploy": {
+      "type": "boolean",
+      "instructions": "Does this change touch CI pipelines, deployment configuration or release automation?",
+      "risk": true
+    },
+    "schema_migration": {
+      "type": "boolean",
+      "instructions": "Does this change alter a database schema or add a data migration?",
+      "risk": true
+    },
+    "email": {
+      "type": "boolean",
+      "instructions": "Does this change send, template or reroute email or other outbound user messages?",
+      "risk": true
+    },
+    "prod_data": {
+      "type": "boolean",
+      "instructions": "Does this change read, modify or delete production data or real user records?",
+      "risk": true
+    },
+    "build_scripts": {
+      "type": "boolean",
+      "instructions": "Does this change touch build scripts, install hooks or tooling that runs code on developer or CI machines?",
+      "risk": true
+    }
+  },
+  "per_item": null,
+  "fallback": {
+    "escalate": false,
+    "reasons": []
+  }
+}

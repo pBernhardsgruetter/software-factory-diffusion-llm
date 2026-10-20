@@ -1,0 +1,18 @@
+{
+  "id": "D7",
+  "name": "promote",
+  "questions": {
+    "beyond_fast_tier": {
+      "type": "boolean",
+      "instructions": "Is the remaining work beyond what the fast tier can handle reliably?",
+      "criteria": {
+        "true": "The work needs deeper reasoning, wider changes or more context than a fast edit.",
+        "false": "The remaining work is small, local and well understood."
+      }
+    }
+  },
+  "per_item": null,
+  "fallback": {
+    "promote": true
+  }
+}

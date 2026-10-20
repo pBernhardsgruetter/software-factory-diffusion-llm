@@ -1,0 +1,20 @@
+{
+  "id": "D4",
+  "name": "failure",
+  "questions": {
+    "cause": {
+      "type": "choice",
+      "instructions": "What is the most likely cause of this failure?",
+      "criteria": {
+        "flaky": "Intermittent or timing-related failure unrelated to the change; a retry would likely pass.",
+        "env": "The environment is broken or missing something, such as a service, credential, tool or network.",
+        "code": "The code under change is wrong and needs a fix.",
+        "spec_conflict": "The requirements or tests contradict each other, so the code cannot satisfy both."
+      }
+    }
+  },
+  "per_item": null,
+  "fallback": {
+    "action": "fix"
+  }
+}

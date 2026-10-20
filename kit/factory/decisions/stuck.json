@@ -1,0 +1,19 @@
+{
+  "id": "D8",
+  "name": "stuck",
+  "questions": {
+    "progress": {
+      "type": "score",
+      "instructions": "How much real progress did the latest attempt make toward the goal?",
+      "criteria": [
+        "None: repeating the same steps or errors, or going backwards.",
+        "Little: some movement but the main problem is unchanged.",
+        "Clear: concrete advance such as new passing checks or a narrowed problem."
+      ]
+    }
+  },
+  "per_item": null,
+  "fallback": {
+    "escalate": false
+  }
+}

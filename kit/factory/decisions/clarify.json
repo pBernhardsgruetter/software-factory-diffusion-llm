@@ -1,0 +1,18 @@
+{
+  "id": "D2",
+  "name": "clarify",
+  "questions": {
+    "needs_human_clarification": {
+      "type": "boolean",
+      "instructions": "Is the task description too ambiguous or incomplete to implement without asking a human?",
+      "criteria": {
+        "true": "Key requirements are missing, contradictory or open to very different readings.",
+        "false": "The task is clear enough to implement as written."
+      }
+    }
+  },
+  "per_item": null,
+  "fallback": {
+    "ask_human": false
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "id": "D11",
+  "name": "visual",
+  "questions": {},
+  "per_item": {
+    "state_key": "criteria",
+    "prefix": "c",
+    "question": {
+      "type": "boolean",
+      "instructions": "Is this acceptance criterion met by what the screenshot shows?",
+      "criteria": {
+        "true": "The screenshot clearly shows the criterion satisfied.",
+        "false": "The screenshot shows the criterion violated or absent."
+      }
+    }
+  },
+  "fallback": {}
+}

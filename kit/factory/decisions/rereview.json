@@ -1,0 +1,25 @@
+{
+  "id": "D5",
+  "name": "rereview",
+  "questions": {},
+  "per_item": {
+    "state_key": "reviewers",
+    "prefix": "r",
+    "question": {
+      "type": "boolean",
+      "instructions": "Did the changes since this reviewer's last verdict touch the area this reviewer examines?",
+      "criteria": {
+        "true": "The delta affects files or behavior within this reviewer's scope.",
+        "false": "The delta is outside this reviewer's scope."
+      }
+    }
+  },
+  "fallback": {
+    "reviewers": [
+      "security",
+      "ux",
+      "ui",
+      "code"
+    ]
+  }
+}

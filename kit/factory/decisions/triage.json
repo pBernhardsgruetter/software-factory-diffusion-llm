@@ -1,0 +1,87 @@
+{
+  "id": "D1",
+  "name": "triage",
+  "questions": {
+    "kind": {
+      "type": "choice",
+      "instructions": "What kind of work is this task?",
+      "criteria": {
+        "docs": "Only documentation, comments or README text changes.",
+        "ui": "Mainly changes what users see or interact with in the interface.",
+        "bugfix": "Fixes incorrect behavior in existing functionality.",
+        "feature": "Adds new user-facing or API functionality.",
+        "refactor": "Restructures existing code without changing behavior.",
+        "infra": "Changes tooling, build, CI, deployment or environment setup."
+      }
+    },
+    "complexity": {
+      "type": "score",
+      "instructions": "How complex is this task to implement?",
+      "criteria": [
+        "Trivial: a one-line or purely mechanical edit.",
+        "Small: a few lines in one or two files.",
+        "Medium: several files or some design decisions.",
+        "Large: many files, new components or cross-cutting changes."
+      ]
+    },
+    "ui_change": {
+      "type": "boolean",
+      "instructions": "Does this change alter anything a user sees or interacts with in a user interface?",
+      "criteria": {
+        "true": "The change affects screens, components, styling or interaction.",
+        "false": "The change has no effect on any user interface."
+      }
+    },
+    "auth": {
+      "type": "boolean",
+      "instructions": "Does this change touch authentication, authorization, permissions or user sessions?",
+      "risk": true
+    },
+    "payments": {
+      "type": "boolean",
+      "instructions": "Does this change touch billing, charges, refunds or a payment provider?",
+      "risk": true
+    },
+    "dependencies": {
+      "type": "boolean",
+      "instructions": "Does this change add, remove or upgrade a third-party dependency or lockfile entry?",
+      "risk": true
+    },
+    "ci_deploy": {
+      "type": "boolean",
+      "instructions": "Does this change touch CI pipelines, deployment configuration or release automation?",
+      "risk": true
+    },
+    "schema_migration": {
+      "type": "boolean",
+      "instructions": "Does this change alter a database schema or add a data migration?",
+      "risk": true
+    },
+    "email": {
+      "type": "boolean",
+      "instructions": "Does this change send, template or reroute email or other outbound user messages?",
+      "risk": true
+    },
+    "prod_data": {
+      "type": "boolean",
+      "instructions": "Does this change read, modify or delete production data or real user records?",
+      "risk": true
+    },
+    "build_scripts": {
+      "type": "boolean",
+      "instructions": "Does this change touch build scripts, install hooks or tooling that runs code on developer or CI machines?",
+      "risk": true
+    }
+  },
+  "per_item": null,
+  "fallback": {
+    "tier": "heavy",
+    "reviewers": [
+      "security",
+      "ux",
+      "ui",
+      "code"
+    ],
+    "risks": []
+  }
+}
