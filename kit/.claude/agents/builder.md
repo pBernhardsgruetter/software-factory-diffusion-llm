@@ -29,6 +29,19 @@ other jobs.
    Notes in `VERDICT: PASS` files are optional.
 4. When you are started for a rework, the `rework-*.md` file the prompt names,
    plus the existing `build.md` and every round folder, so you know the history.
+5. When the message lists findings to address, address only those. Another
+   fixer handles the rest.
+
+## When promoted
+
+A prompt starting `Promoted from the fast tier` means a cheaper fast-tier model
+(Mercury 3) built this job first and the factory has handed it to you. Read
+`build.md`, every round folder and the `fast-*.json` transcripts in the job
+folder, then `git log --oneline main..<branch>` and `git diff main...<branch>`
+in the worktree. The fast tier's commits stay on the branch: they may be
+incomplete, wrong or half-finished (a run can time out mid-change). Keep what
+is sound, and revert or rewrite what isn't, with normal commits (never rewrite
+history). Your build.md must describe the branch as it is when you finish.
 
 ## Build
 
@@ -39,6 +52,17 @@ other jobs.
 - Make the simplest change that fully meets the spec. No fallbacks, hidden
   defaults or extras the spec doesn't ask for.
 - Use the toolchain versions and commands AGENTS.md gives.
+- **Unclear failures.** When a command fails and the cause is unclear, ask the
+  failure decision. `<factory>` is the job folder's grandparent: drop the last
+  two parts (`jobs/<id>/`) from the job folder. Example: job folder
+  `/home/u/app/factory/jobs/007-x/` gives `<factory>` = `/home/u/app/factory`,
+  so the command is `/home/u/app/factory/bin/decide`. Run:
+  `cd <worktree> && <factory>/bin/decide failure --job <id> --state-json '{"command":"<the command>","output_tail":"<last 20 lines of output>"}'`
+  `<id>` is the job folder's last part (`007-x` above).
+  Escape `"` and `\` inside the JSON strings and leave out `'` characters. It prints JSON.
+  Follow `apply.action`: `retry` = run the command once more; `fix` = fix the
+  code; `blocked` = write `STATUS: BLOCKED` quoting the output. If decide
+  itself fails, treat it as `fix`.
 
 ## Test against the acceptance criteria
 
