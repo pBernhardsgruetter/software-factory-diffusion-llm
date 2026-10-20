@@ -1,0 +1,60 @@
+{
+  "decide": {
+    "endpoint": "https://openrouter.ai/api/v1/systemone",
+    "models": [
+      "inception/mercury-decide:free",
+      "inception/mercury-decide"
+    ],
+    "timeout_s": 5,
+    "state_char_cap": 200000,
+    "api_key_env": "OPENROUTER_API_KEY"
+  },
+  "fast_coder": {
+    "model": "inception/mercury-3",
+    "timeout_s": 1800,
+    "harness": "claude-p",
+    "price_per_mtok": {
+      "input": 0.1,
+      "output": 0.35,
+      "cached_input": 0.01
+    }
+  },
+  "decisions": {
+    "triage": {
+      "mode": "shadow"
+    },
+    "clarify": {
+      "mode": "shadow"
+    },
+    "assumptions": {
+      "mode": "shadow"
+    },
+    "failure": {
+      "mode": "shadow"
+    },
+    "rereview": {
+      "mode": "shadow"
+    },
+    "finding": {
+      "mode": "shadow"
+    },
+    "promote": {
+      "mode": "shadow"
+    },
+    "stuck": {
+      "mode": "shadow"
+    },
+    "escalation": {
+      "mode": "shadow"
+    },
+    "toolgate": {
+      "mode": "shadow"
+    },
+    "visual": {
+      "mode": "shadow"
+    }
+  },
+  "redact_patterns": [],
+  "max_resumes": 2,
+  "job_budget_usd": 5.0
+}
