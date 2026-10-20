@@ -3,9 +3,10 @@
     decide <name> --job <id> [--state-file F] [--state-json S] [--image P]...
     decide toolgate [--state-file F] [--state-json S]
     decide outcome --job <id> --decision <name> --truth '<json>' [--note TEXT]
-    decide report                      (Task 13; not implemented yet)
+    decide report [--min-cases N] [--json]
 
-Prints exactly one JSON object on stdout. Exit 0 whenever a record is printed:
+``report`` prints a table (or the report dict with ``--json``) and exits 0.
+Otherwise prints exactly one JSON object on stdout. Exit 0 whenever a record is printed:
 a failed Decide call and environment errors (unreadable config or policy, a
 failed state build, a failed log write) still print a fallback record with
 ``error`` set. Exit 2 only for caller mistakes: a usage error, an unknown
@@ -139,11 +140,23 @@ def _outcome(argv: list[str]) -> dict:
     return record
 
 
+def _report(argv: list[str]) -> str:
+    from .report import build_report, format_report
+
+    p = _Parser(prog="decide report", description="Shadow-mode calibration report.")
+    p.add_argument("--min-cases", type=int, default=20)
+    p.add_argument("--json", action="store_true")
+    a = p.parse_args(argv)
+    rep = build_report(_root(), min_cases=a.min_cases)
+    return json.dumps(rep, indent=2) if a.json else format_report(rep, a.min_cases)
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else list(argv)
     try:
         if argv[:1] == ["report"]:
-            raise UsageError("decide report: not implemented")
+            print(_report(argv[1:]))
+            return 0
         record = _outcome(argv[1:]) if argv[:1] == ["outcome"] else _decide(argv)
     except UsageError as exc:
         print(exc, file=sys.stderr)

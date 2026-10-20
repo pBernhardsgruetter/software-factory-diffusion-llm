@@ -164,9 +164,25 @@ def test_cli_usage_error_exit_2(root, capsys):
     assert code == 2 and out == ""
 
 
-def test_cli_report_not_implemented(root, capsys):
+def test_cli_report(root, capsys):
+    code, out, err = run(capsys, "promote", "--job", "smoke")
+    assert code == 0, err
     code, out, err = run(capsys, "report")
-    assert code == 2 and out == "" and "not implemented" in err
+    assert code == 0 and err == ""
+    lines = out.splitlines()
+    assert lines[0].split() == ["decision", "cases", "paired", "coverage", "agreement",
+                                "unsafe", "ready"]
+    assert lines[1].split()[:3] == ["promote", "1", "0"]
+    assert lines[-1] == "skipped_lines: 0"
+    code, out, err = run(capsys, "report", "--json", "--min-cases", "1")
+    assert code == 0
+    rep = json.loads(out)
+    assert rep["promote"]["cases"] == 1 and rep["skipped_lines"] == 0
+
+
+def test_cli_report_bad_option_exit_2(root, capsys):
+    code, out, err = run(capsys, "report", "--min-cases", "x")
+    assert code == 2 and out == ""
 
 
 def test_bin_decide_wrapper_end_to_end(root):
