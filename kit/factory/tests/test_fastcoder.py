@@ -1,0 +1,432 @@
+import json
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import pytest
+
+from factorylib import fastcoder
+from factorylib.paths import load_job
+
+KIT = Path(__file__).resolve().parent.parent
+KEY = "sk-or-v1-test-not-real-0123456789"
+
+# S2-shaped ``claude -p --output-format json`` result (run 1 values).
+S2_RESULT = {
+    "is_error": False,
+    "num_turns": 7,
+    "stop_reason": "end_turn",
+    "session_id": None,  # filled from argv by the stub
+    "total_cost_usd": 0.2242005,
+    "usage": {"input_tokens": 29066, "cache_creation_input_tokens": 0,
+              "cache_read_input_tokens": 115091, "output_tokens": 853},
+    "modelUsage": {"inception/mercury-3": {
+        "inputTokens": 29066, "outputTokens": 853, "cacheReadInputTokens": 115091,
+        "cacheCreationInputTokens": 0, "costUSD": 0.2242005}},
+    "permission_denials": [],
+    "subtype": "success",
+    "result": "# Scout\n\n## Relevant files\n- src/main.ts: entry point\n",
+    "type": "result",
+}
+
+STUB = r'''#!{python}
+import json, os, sys, time
+log = os.environ["STUB_LOG"]
+rec = {{"argv": sys.argv[1:], "env": dict(os.environ), "cwd": os.getcwd(),
+       "stdin": sys.stdin.read()}}
+with open(log, "a") as f:
+    f.write(json.dumps(rec) + "\n")
+if os.environ.get("STUB_SLEEP"):
+    time.sleep(float(os.environ["STUB_SLEEP"]))
+out = json.loads(os.environ["STUB_RESULT"])
+argv = sys.argv[1:]
+for flag in ("--session-id", "--resume"):
+    if flag in argv:
+        out["session_id"] = argv[argv.index(flag) + 1]
+print(json.dumps(out))
+sys.exit(int(os.environ.get("STUB_EXIT", "0")))
+'''
+
+
+def git(cwd, *args):
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+                   cwd=cwd, check=True, capture_output=True)
+
+
+@pytest.fixture
+def env(tmp_path, monkeypatch):
+    """A main checkout with a job whose worktree is a linked git worktree."""
+    root = tmp_path / "main"
+    (root / "factory").mkdir(parents=True)
+    git(root, "init", "-b", "main")
+    (root / "README.md").write_text("hi\n")
+    git(root, "add", "README.md")
+    git(root, "commit", "-m", "init")
+    shutil.copy(KIT / "config.json", root / "factory" / "config.json")
+    wt = tmp_path / "main-factory" / "001-x"
+    git(root, "worktree", "add", str(wt), "-b", "factory/001-x")
+    folder = root / "factory" / "jobs" / "001-x"
+    folder.mkdir(parents=True)
+    (folder / "job.json").write_text(json.dumps({
+        "id": "001-x", "feature": "add a dark mode toggle", "branch": "factory/001-x",
+        "worktree": str(wt.resolve()),
+    }))
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    stub = bindir / "claude"
+    stub.write_text(STUB.format(python=sys.executable))
+    stub.chmod(0o755)
+    log = tmp_path / "stub.jsonl"
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("STUB_LOG", str(log))
+    monkeypatch.setenv("STUB_RESULT", json.dumps(S2_RESULT))
+    monkeypatch.setenv("OPENROUTER_API_KEY", KEY)
+    for name in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY",
+                 "ANTHROPIC_DEFAULT_HAIKU_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL",
+                 "FACTORY_HEADLESS", "STUB_SLEEP", "STUB_EXIT"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.chdir(wt)
+    return {"root": root.resolve(), "wt": wt.resolve(), "log": log,
+            "folder": folder.resolve(), "tmp": tmp_path}
+
+
+def run(capsys, *argv):
+    code = fastcoder.main(list(argv))
+    out, err = capsys.readouterr()
+    return code, out, err
+
+
+def calls(env):
+    if not env["log"].exists():
+        return []
+    return [json.loads(x) for x in env["log"].read_text().splitlines()]
+
+
+def flag(argv, name):
+    return argv[argv.index(name) + 1]
+
+
+def set_cfg(env, **fast):
+    path = env["root"] / "factory" / "config.json"
+    cfg = json.loads(path.read_text())
+    cfg["fast_coder"].update(fast)
+    path.write_text(json.dumps(cfg))
+
+
+# --- brief tests -------------------------------------------------------------
+
+def test_child_env_isolated(env, capsys):
+    code, out, _ = run(capsys, "fast-builder", "--job", "001-x", "--port", "5174")
+    assert code == 0
+    assert "ANTHROPIC_BASE_URL" not in os.environ
+    assert "ANTHROPIC_AUTH_TOKEN" not in os.environ
+    assert "FACTORY_HEADLESS" not in os.environ
+    (call,) = calls(env)
+    child = call["env"]
+    assert child["ANTHROPIC_BASE_URL"] == "https://openrouter.ai/api"
+    assert child["ANTHROPIC_AUTH_TOKEN"] == KEY
+    assert child["ANTHROPIC_API_KEY"] == ""
+    assert child["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "inception/mercury-3"
+    assert child["CLAUDE_CODE_SUBAGENT_MODEL"] == "inception/mercury-3"
+    assert child["FACTORY_HEADLESS"] == "1"
+    # The key never reaches argv or our stdout/stderr.
+    assert not any(KEY in a for a in call["argv"])
+    assert KEY not in out
+
+
+def test_scout_tools_readonly(env, capsys):
+    run(capsys, "scout", "--job", "001-x")
+    run(capsys, "fast-builder", "--job", "001-x")
+    run(capsys, "fast-fixer", "--job", "001-x")
+    scout, builder, fixer = calls(env)
+    assert flag(scout["argv"], "--allowedTools") == "Read,Grep,Glob"
+    assert flag(builder["argv"], "--allowedTools") == "Read,Grep,Glob,Edit,Write,Bash"
+    assert flag(fixer["argv"], "--allowedTools") == "Read,Grep,Glob,Edit,Write,Bash"
+    for c in (scout, builder, fixer):
+        assert flag(c["argv"], "--disallowedTools") == "Agent,WebFetch,WebSearch"
+
+
+def test_new_session_uses_session_id_resume_uses_resume(env, capsys):
+    code, out, _ = run(capsys, "fast-builder", "--job", "001-x")
+    assert code == 0
+    first = json.loads(out)
+    code, out, _ = run(capsys, "fast-builder", "--job", "001-x", "--round", "2",
+                       "--resume", first["session_id"])
+    second = json.loads(out)
+    new, resumed = calls(env)
+    sid = flag(new["argv"], "--session-id")
+    assert "--resume" not in new["argv"]
+    import uuid
+    assert str(uuid.UUID(sid)) == sid
+    assert first["session_id"] == sid
+    assert flag(resumed["argv"], "--resume") == sid
+    assert "--session-id" not in resumed["argv"]
+    assert second["session_id"] == sid
+
+
+def test_settings_hook_points_to_main_root_toolgate(env, capsys):
+    run(capsys, "fast-builder", "--job", "001-x")
+    (call,) = calls(env)
+    settings = json.loads(flag(call["argv"], "--settings"))
+    (entry,) = settings["hooks"]["PreToolUse"]
+    assert entry["matcher"] == "Bash|Edit|Write"
+    (hook,) = entry["hooks"]
+    gate = env["root"] / "factory" / "bin" / "tool-gate"
+    assert hook == {"type": "command", "command": shlex.quote(str(gate)), "timeout": 10}
+    # The hook is the main checkout's, not one under the worktree we ran from.
+    assert str(env["wt"]) not in hook["command"]
+
+
+def test_settings_hook_command_quotes_paths_with_spaces(tmp_path):
+    root = tmp_path / "my repo"
+    s = json.loads(fastcoder.hook_settings(root))
+    cmd = s["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+    assert shlex.split(cmd) == [str(root / "factory" / "bin" / "tool-gate")]
+
+
+def test_output_json_and_transcript_written(env, capsys):
+    code, out, err = run(capsys, "fast-builder", "--job", "001-x", "--round", "3")
+    assert code == 0
+    rec = json.loads(out)
+    assert set(rec) == {"role", "session_id", "exit_code", "cost_usd",
+                        "cost_estimate", "transcript", "error"}
+    assert rec["role"] == "fast-builder"
+    assert rec["exit_code"] == 0 and rec["error"] is None
+    assert rec["cost_estimate"] is True
+    transcript = env["folder"] / "fast-fast-builder-round-3.json"
+    assert rec["transcript"] == str(transcript)
+    data = json.loads(transcript.read_text())
+    assert data["session_id"] == rec["session_id"]
+    assert data["total_cost_usd"] == 0.2242005
+
+
+def test_missing_key_exits_2_without_spawning(env, capsys, monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY")
+    code, out, err = run(capsys, "scout", "--job", "001-x")
+    assert code == 2 and out == ""
+    assert "OPENROUTER_API_KEY" in err
+    monkeypatch.setenv("OPENROUTER_API_KEY", "")
+    code, out, err = run(capsys, "scout", "--job", "001-x")
+    assert code == 2 and out == ""
+    assert calls(env) == []
+
+
+# --- controller extras -------------------------------------------------------
+
+def test_exact_s2_flag_set_and_invocation(env, capsys):
+    run(capsys, "fast-builder", "--job", "001-x")
+    (call,) = calls(env)
+    argv = call["argv"]
+    assert argv[0] == "-p"
+    assert flag(argv, "--model") == "inception/mercury-3"
+    assert flag(argv, "--permission-mode") == "dontAsk"
+    assert flag(argv, "--setting-sources") == "local"
+    assert flag(argv, "--output-format") == "json"
+    prompt = (KIT / "fast-agents" / "fast-builder.md").read_text()
+    assert flag(argv, "--append-system-prompt") == prompt
+    assert "--max-turns" not in argv
+    assert call["stdin"] == ""
+    assert Path(call["cwd"]).resolve() == env["wt"]
+
+
+def test_child_runs_under_timeout(env, capsys, monkeypatch):
+    seen = {}
+    real = subprocess.Popen
+
+    def spy(cmd, **kw):
+        seen["cmd"] = cmd
+        return real(cmd, **kw)
+
+    monkeypatch.setattr(fastcoder.subprocess, "Popen", spy)
+    run(capsys, "scout", "--job", "001-x")
+    cmd = seen["cmd"]
+    assert cmd[0] == "timeout"
+    assert cmd[cmd.index("claude") - 1] == "1800"
+
+
+def test_first_message_per_role(env, capsys):
+    run(capsys, "scout", "--job", "001-x")
+    run(capsys, "fast-builder", "--job", "001-x", "--round", "2", "--port", "5174")
+    run(capsys, "fast-fixer", "--job", "001-x", "--round", "4")
+    run(capsys, "fast-builder", "--job", "001-x", "--message", "Do the thing.")
+    scout, builder, fixer, custom = (c["argv"][-1] for c in calls(env))
+    folder, wt = env["folder"], env["wt"]
+    head = f"Job folder: {folder}/. Worktree: {wt}. Branch: factory/001-x."
+    assert scout == f"{head}\nScout for this feature: add a dark mode toggle"
+    assert builder == f"{head}\nBuild round 2. Port: 5174."
+    assert fixer == f"{head}\nFix the findings listed in {folder}/round-4/fast-fix.md."
+    assert custom == f"{head}\nDo the thing."
+
+
+def test_scout_result_written_to_scout_md(env, capsys):
+    code, out, _ = run(capsys, "scout", "--job", "001-x")
+    assert code == 0
+    assert (env["folder"] / "scout.md").read_text() == S2_RESULT["result"]
+
+
+def test_builder_does_not_write_scout_md(env, capsys):
+    run(capsys, "fast-builder", "--job", "001-x")
+    assert not (env["folder"] / "scout.md").exists()
+
+
+def test_cost_estimate_math():
+    prices = {"input": 0.10, "output": 0.35, "cached_input": 0.01}
+    out = {"usage": {"input_tokens": 1_000_000, "output_tokens": 2_000_000,
+                     "cache_read_input_tokens": 3_000_000,
+                     "cache_creation_input_tokens": 4_000_000},
+           "total_cost_usd": 999.0}
+    # 1*0.10 + 2*0.35 + 3*0.01 + 4*0.10 (cache creation at the input rate)
+    assert fastcoder.estimate_cost(out, prices) == pytest.approx(1.23)
+    # modelUsage takes precedence and is summed over models.
+    mu = {"modelUsage": {
+        "a": {"inputTokens": 1_000_000, "outputTokens": 0,
+              "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0},
+        "b": {"inputTokens": 0, "outputTokens": 1_000_000,
+              "cacheReadInputTokens": 1_000_000, "cacheCreationInputTokens": 1_000_000}},
+        "usage": {"input_tokens": 5}, "total_cost_usd": 999.0}
+    assert fastcoder.estimate_cost(mu, prices) == pytest.approx(0.10 + 0.35 + 0.01 + 0.10)
+    assert fastcoder.estimate_cost({"total_cost_usd": 1.0}, prices) is None
+    assert fastcoder.estimate_cost(None, prices) is None
+
+
+def test_cost_usd_is_estimate_not_total_cost(env, capsys):
+    code, out, _ = run(capsys, "scout", "--job", "001-x")
+    rec = json.loads(out)
+    expected = (29066 * 0.10 + 853 * 0.35 + 115091 * 0.01) / 1e6
+    assert rec["cost_usd"] == pytest.approx(expected)
+    assert rec["cost_usd"] != S2_RESULT["total_cost_usd"]
+
+
+def test_timeout_exits_124_with_error(env, capsys, monkeypatch):
+    set_cfg(env, timeout_s=1)
+    monkeypatch.setenv("STUB_SLEEP", "30")
+    t0 = time.monotonic()
+    code, out, _ = run(capsys, "fast-builder", "--job", "001-x")
+    assert time.monotonic() - t0 < 15
+    assert code == 124
+    rec = json.loads(out)
+    assert rec["error"] == "timeout" and rec["exit_code"] == 124
+    assert rec["cost_usd"] is None and rec["cost_estimate"] is True
+    assert Path(rec["transcript"]).exists()
+
+
+def test_child_failure_exit_code_passed_through(env, capsys, monkeypatch):
+    monkeypatch.setenv("STUB_EXIT", "3")
+    code, out, _ = run(capsys, "fast-builder", "--job", "001-x")
+    assert code == 3
+    rec = json.loads(out)
+    assert rec["exit_code"] == 3 and rec["error"]
+
+
+def test_is_error_result_sets_error(env, capsys, monkeypatch):
+    bad = dict(S2_RESULT, is_error=True, subtype="error_during_execution", result="boom")
+    monkeypatch.setenv("STUB_RESULT", json.dumps(bad))
+    code, out, _ = run(capsys, "scout", "--job", "001-x")
+    rec = json.loads(out)
+    assert rec["error"] and code == 0
+    assert not (env["folder"] / "scout.md").exists()
+
+
+def test_usage_errors_exit_2(env, capsys):
+    assert run(capsys, "reviewer", "--job", "001-x")[0] == 2
+    assert run(capsys, "scout")[0] == 2
+    assert run(capsys, "scout", "--job", "../etc")[0] == 2
+    assert run(capsys, "scout", "--job", "nope")[0] == 2
+    assert calls(env) == []
+
+
+def test_pi_command_construction(env):
+    cfg = json.loads((env["root"] / "factory" / "config.json").read_text())
+    cfg["fast_coder"]["harness"] = "pi"
+    job = load_job(env["root"], "001-x")
+    root = env["root"]
+    cmd = fastcoder.build_command(cfg, root, "fast-builder", "SID-1", resume=False,
+                                  prompt="PROMPT", message="MSG")
+    assert cmd == [
+        "timeout", "-k", "10", "1800",
+        "pi", "-p", "--provider", "openrouter", "--model", "inception/mercury-3",
+        "--session-id", "SID-1",
+        "--tools", "read,bash,edit,write",
+        "--no-skills", "--no-extensions", "--no-context-files",
+        "-e", str(root / "factory" / "fast-agents" / "pi-tool-gate.ts"),
+        "--append-system-prompt", "PROMPT",
+        "--mode", "json", "MSG",
+    ]
+    scout = fastcoder.build_command(cfg, root, "scout", "SID-2", resume=True,
+                                    prompt="P", message="M")
+    assert scout[scout.index("--tools") + 1] == "read,grep,find,ls"
+    # pi resumes by reusing the exact session id.
+    assert scout[scout.index("--session-id") + 1] == "SID-2"
+    env_ = fastcoder.child_env(cfg, root, KEY)
+    assert env_["OPENROUTER_API_KEY"] == KEY
+    assert env_["FACTORY_HEADLESS"] == "1"
+    assert env_["FACTORY_TOOL_GATE"] == str(root / "factory" / "bin" / "tool-gate")
+    assert "ANTHROPIC_BASE_URL" not in env_
+    assert not any(KEY in a for a in cmd + scout)
+    assert job.worktree == env["wt"]
+
+
+def test_pi_output_parsed_for_cost_and_result():
+    lines = [
+        {"type": "session", "id": "abc"},
+        {"type": "agent_end", "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+            {"role": "assistant", "content": [{"type": "toolCall"}],
+             "usage": {"input": 1_000_000, "output": 0, "cacheRead": 0, "cacheWrite": 0}},
+            {"role": "assistant", "content": [{"type": "text", "text": "done"}],
+             "usage": {"input": 0, "output": 1_000_000, "cacheRead": 1_000_000,
+                       "cacheWrite": 1_000_000}},
+        ]},
+    ]
+    parsed = fastcoder.parse_pi("\n".join(json.dumps(x) for x in lines))
+    assert parsed["result"] == "done"
+    prices = {"input": 0.10, "output": 0.35, "cached_input": 0.01}
+    assert fastcoder.estimate_cost(parsed, prices) == pytest.approx(0.10 + 0.35 + 0.01 + 0.10)
+
+
+def test_prompts_exist_and_carry_rules():
+    d = KIT / "fast-agents"
+    scout = (d / "scout.md").read_text()
+    assert "absolute paths" in scout.lower() and "never edit" in scout.lower()
+    for role in ("fast-builder", "fast-fixer"):
+        text = (d / f"{role}.md").read_text()
+        assert "cd <worktree> && " in text and "absolute paths" in text.lower()
+        assert "needs human:" in text and "STATUS: BLOCKED" in text
+        assert "bin/decide failure --job" in text and "apply.action" in text
+        assert "build.md" in text
+    assert "### Round" in (d / "fast-fixer.md").read_text()
+    assert (d / "pi-tool-gate.ts").is_file()
+
+
+def test_wrapper_runs_module():
+    """``factory/bin/fast-coder`` reaches ``python -m factorylib.fastcoder``."""
+    if shutil.which("uv") is None:
+        pytest.skip("uv not installed")
+    r = subprocess.run([str(KIT / "bin" / "fast-coder"), "--help"],
+                       capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0 and "scout" in r.stdout
+
+
+def test_missing_worktree_exits_2_without_spawning(env, capsys):
+    job = env["folder"] / "job.json"
+    raw = json.loads(job.read_text())
+    raw["worktree"] = str(env["tmp"] / "gone")
+    job.write_text(json.dumps(raw))
+    code, out, err = run(capsys, "scout", "--job", "001-x")
+    assert code == 2 and out == "" and "worktree" in err
+    assert calls(env) == []
+
+
+def test_unstartable_child_prints_record(env, capsys, monkeypatch):
+    def boom(*a, **kw):
+        raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr(fastcoder, "_run_child", boom)
+    code, out, _ = run(capsys, "scout", "--job", "001-x")
+    rec = json.loads(out)
+    assert code == 127 and rec["exit_code"] == 127
+    assert rec["error"].startswith("could not start child")
