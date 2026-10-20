@@ -1,0 +1,19 @@
+[project]
+name = "factorylib"
+version = "0.1.0"
+description = "Mercury software factory helpers: decision client, tool gate, fast coder"
+requires-python = ">=3.13"
+dependencies = ["httpx>=0.27"]
+
+[dependency-groups]
+dev = ["pytest", "respx"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["factorylib"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
