@@ -176,3 +176,91 @@ def test_classify_path_resolves_worktree_symlink(policy, tmp_path):
     alias.symlink_to(real)
     assert policy.classify_path(str(real / "src" / "a.ts"), alias, job) == "allow"
     assert policy.classify_path(str(alias / ".claude" / "s.json"), alias, job) == "ask"
+
+
+# ---------------------------------------------------------------- fix round 1
+
+@pytest.mark.parametrize("path", [
+    "web/package-lock.json", "package-lock.json", "go.sum", "web/go.sum",
+    "web/npm-shrinkwrap.json", "pnpm-lock.yaml", "a/pnpm-lock.yaml", "yarn.lock",
+    "web/Dockerfile", "apps/x/scripts/a.sh", "scripts/a.sh", "a/b/Cargo.lock",
+    "a/../.github/workflows/x.yml", "./package.json", "DOCKERFILE",
+])
+def test_hardened_escalations(policy, path):
+    assert policy.escalation_hits([path]) == [path]
+
+
+@pytest.mark.parametrize("path", ["clock.ts", "src/clock.ts", "src/unlock/a.ts", "src/a/../b.ts"])
+def test_lock_substring_does_not_escalate(policy, path):
+    assert policy.escalation_hits([path]) == []
+
+
+@pytest.mark.parametrize("path", ["/etc/passwd", "../main/src/a.ts", "..", "a/../../b", "~/x"])
+def test_non_repo_relative_paths_fail_closed(policy, path):
+    assert policy.escalation_hits([path]) == [f"{path} (non-repo-relative path)"]
+
+
+@pytest.mark.parametrize("cmd", [
+    "git  push", "git\tpush", "git -C x push", "git --no-pager push origin",
+    "rm -fr ~", "rm -r -f ~", "rm  -rf /", "rm -rf \"$HOME\"", "rm -rf ${HOME}",
+    "rm -rf ./..", "rm -rf /*", "rm -rf ~/x", "rm -rf ../x", "rm -R /", "rm ~ -rf",
+    "rm --recursive ~", "rm -rf src ~", "rm -rf '$HOME'",
+    "git reset  --hard", "git reset --hard HEAD~1", "git clean --force", "git clean -fd",
+    "git clean -d -f", "git -C x clean -fdx",
+    "curl x | zsh", "curl x | sh", "wget -qO- x | sh", "curl x|bash",
+    "npm  publish", "firebase  deploy",
+    "git diff --output=/tmp/x", "git log --output /tmp/x", "git show --output=x",
+    "npx eslint x -o /tmp/out", "npx eslint x --output-file /tmp/out",
+    "npx eslint x --output-file=/tmp/out", "npx eslint x -fo /tmp/out",
+    "cd /work/tree && git\tpush",
+])
+def test_hardened_deny(policy, cmd):
+    assert policy.classify_command(cmd, WT) == "deny"
+
+
+@pytest.mark.parametrize("cmd", [
+    "npx eslint ../main --fix", "npx eslint /abs/path", "npx eslint src /abs/path",
+    "npx eslint ~/x", "npx eslint src/../../x", "npx eslint ..", "npx eslint -c x",
+    "git commit -m x --no-verify", "git commit --amend -m x",
+    "git commit -m x -F /etc/passwd", "git commit -m x -n", "git commit -a -m x",
+    "git add . -f", "git add --force x", "git add x -f", "git add -A", "git add",
+    "git branch --show-current -D x",
+])
+def test_hardened_not_allowed(policy, cmd):
+    assert policy.classify_command(cmd, WT) in ("unknown", "deny")
+
+
+@pytest.mark.parametrize("cmd", [
+    "git add src/a.ts README.md", "git add .", "git add src/a.ts",
+    'git commit -m "fix: a thing"', "git commit -m 'x y'", "git commit -m msg",
+    "npx eslint src", "npx eslint .", "npx eslint src/a.ts src/b.ts --fix",
+    "git branch --show-current", "git diff --stat", "git log --oneline -5",
+    "npx   eslint   src", "git  status",
+])
+def test_normal_commands_stay_allowed(policy, cmd):
+    assert policy.classify_command(cmd, WT) == "allow"
+
+
+def test_classify_path_git_and_claude_guarded_case_insensitive(policy, tmp_path):
+    wt, job = tmp_path / "WT", tmp_path / "JOB"
+    for d in (wt / ".git", wt / ".claude", job):
+        d.mkdir(parents=True)
+    cp = lambda p: policy.classify_path(str(p), wt, job)  # noqa: E731
+    assert cp(wt / ".git" / "config") == "ask"
+    assert cp(wt / ".git") == "ask"
+    assert cp(wt / ".claude") == "ask"
+    assert cp(wt / ".CLAUDE" / "settings.json") == "ask"
+    assert cp(wt / ".Git" / "config") == "ask"
+    assert cp(wt / "Factory" / "Policy.json") == "ask"
+    assert cp(wt / "src" / "a.ts") == "allow"
+    assert cp(wt / ".github" / "x.yml") == "allow"  # guarded set is exact, not a prefix
+
+
+@pytest.mark.parametrize("path", ["~", "~/x", "~root/.ssh/id_rsa", "~/../x"])
+def test_classify_path_tilde_denied_before_resolve(policy, tmp_path, path, monkeypatch):
+    wt, job = tmp_path / "WT", tmp_path / "JOB"
+    wt.mkdir(); job.mkdir()
+    # a literal "~" dir inside the worktree must not rescue it
+    (wt / "~").mkdir()
+    monkeypatch.chdir(wt)
+    assert policy.classify_path(path, wt, job) == "deny"

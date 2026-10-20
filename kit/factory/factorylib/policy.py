@@ -7,6 +7,7 @@ one. When in doubt a command is ``unknown`` (never ``allow``).
 from __future__ import annotations
 
 import json
+import posixpath
 import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -28,11 +29,22 @@ class Policy:
     guarded_paths: list[str]
 
     def escalation_hits(self, paths: list[str]) -> list[str]:
-        """Return the paths matching any escalate glob, in input order."""
-        return [
-            p for p in paths
-            if any(PurePosixPath(p).full_match(g) for g in self.escalate_paths)
-        ]
+        """Return the paths needing a human, in input order.
+
+        Input is REPO-RELATIVE paths (as in ``git diff --name-only``). A path
+        that is absolute, starts with ``~`` or escapes the repo via ``..`` is
+        not repo-relative; it fails closed as ``"<path> (non-repo-relative
+        path)"``. Matching is on the normalised, casefolded path.
+        """
+        globs = [g.casefold() for g in self.escalate_paths]
+        hits: list[str] = []
+        for p in paths:
+            n = posixpath.normpath(p)
+            if n.startswith(("/", "~", "../")) or n == "..":
+                hits.append(f"{p} (non-repo-relative path)")
+            elif any(PurePosixPath(n.casefold()).full_match(g) for g in globs):
+                hits.append(p)
+        return hits
 
     def _strip_cd(self, cmd: str, worktree: Path | None) -> str:
         if worktree is None:
@@ -44,7 +56,9 @@ class Policy:
     def classify_command(
         self, cmd: str, worktree: Path | None
     ) -> Literal["allow", "deny", "unknown"]:
-        cmd = self._strip_cd(cmd, worktree).strip()
+        # Collapse space/tab runs first so ``git  push`` / ``git<TAB>push``
+        # cannot dodge the single-space patterns.
+        cmd = re.sub(r"[ \t]+", " ", self._strip_cd(cmd, worktree)).strip()
         # Deny wins and is checked on every segment AND the whole string, so a
         # pattern that spans a pipe (``curl x | bash``) is still caught.
         candidates = [*(s.strip() for s in _SPLIT.split(cmd)), cmd]
@@ -59,6 +73,8 @@ class Policy:
     def classify_path(
         self, path: str, worktree: Path, job_folder: Path
     ) -> Literal["allow", "ask", "deny"]:
+        if path.startswith("~"):  # never expand or resolve home-relative paths
+            return "deny"
         wt = Path(worktree).resolve()
         job = Path(job_folder).resolve()
         p = Path(path)
@@ -67,8 +83,8 @@ class Policy:
             return "allow"
         if not target.is_relative_to(wt):
             return "deny"
-        rel = PurePosixPath(target.relative_to(wt).as_posix())
-        if any(rel.full_match(g) for g in self.guarded_paths):
+        rel = PurePosixPath(target.relative_to(wt).as_posix().casefold())
+        if any(rel.full_match(g.casefold()) for g in self.guarded_paths):
             return "ask"
         return "allow"
 
