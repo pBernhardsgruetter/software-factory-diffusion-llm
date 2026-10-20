@@ -411,8 +411,10 @@ def test_prompts_exist_and_carry_rules():
         text = (d / f"{role}.md").read_text()
         assert "cd <worktree> && " in text and "absolute paths" in text.lower()
         assert "needs human:" in text and "STATUS: BLOCKED" in text
-        assert "bin/decide failure --job <id>" in text and "apply.action" in text
-        assert "Job id" in text
+        # R30 + final review I4: the keyless child cannot run decide (not on the
+        # allowlist either), so the prompts never ask it to
+        assert "decide" not in text and "apply.action" not in text
+        assert "factory tool-gate: policy deny" in text
         assert "build.md" in text
     assert "### Round" in (d / "fast-fixer.md").read_text()
     assert (d / "pi-tool-gate.ts").is_file()

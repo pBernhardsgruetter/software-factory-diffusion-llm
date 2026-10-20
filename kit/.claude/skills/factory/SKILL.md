@@ -82,8 +82,9 @@ overrides an earlier one. If an outcome call fails, say so in one line and carry
 on: outcomes never block a job. To check whether a decision ever ran for a job:
 `grep -q '"kind": "decision", "decision": "<name>"' factory/jobs/<job-id>/decisions.jsonl`.
 
-Agents run two decisions themselves: builders run `decide failure` and
-`reviewer-ui` runs `decide visual`. You never run those. The tool gate
+Agents run two decisions themselves: the Opus `builder` runs `decide failure`
+(the fast tier has no key, so it never does) and `reviewer-ui` runs
+`decide visual`. You never run those. The tool gate
 (`factory/bin/tool-gate`, a PreToolUse hook on the Mercury 3 roles) asks System 1
 on its own. You never run that decision and record no outcome for it; it stays
 in shadow.
@@ -318,9 +319,19 @@ Wait for it to finish, then go to **Build check**.
 Read the first line of `build.md`.
 
 - `STATUS: READY`: start the next review round.
-- `STATUS: BLOCKED`: if the `## Blocked` reason quotes a `needs human:` denial,
-  **escalate** with source `tool-gate` and that line as the reason. Otherwise go
-  to **Needs human**.
+- `STATUS: BLOCKED`: check the `## Blocked` reason in this order.
+  1. It quotes a tool-gate denial that is about safety (`policy deny`,
+     `guarded path`, `path outside the worktree` or
+     `job folder is orchestrator-owned`): **escalate** with source `tool-gate`
+     and that line as the reason.
+  2. In the `fast` tier, it contains `command not on allowlist` or
+     `cd outside own worktree`: the fast tier's gate is narrower than the Opus
+     builder's, so this is no reason for a human. **Promote** with the reason
+     `fast tier blocked: <that line>` and this round's task (`Build round 1.`
+     or the fix task).
+  3. It quotes any other `needs human:` denial: **escalate** with source
+     `tool-gate` and that line as the reason.
+  4. Otherwise go to **Needs human**.
 - No `build.md`, or no STATUS line: in the `fast` tier, **promote** with the
   reason `fast-builder wrote no build.md` and this round's task (`Build round 1.`
   or the fix task). Otherwise stop and tell the user.

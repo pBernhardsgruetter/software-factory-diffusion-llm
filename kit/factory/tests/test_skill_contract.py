@@ -75,3 +75,23 @@ def test_builder_knows_promotion_and_failure_decision():
     text = (AGENTS / "builder.md").read_text()
     assert "When promoted" in text
     assert "decide failure" in text
+
+
+def test_fast_tier_allowlist_block_promotes():
+    """Final review I4: a fast-tier allowlist block promotes; safety denials escalate."""
+    text = _skill()
+    check = text[text.index("### Build check"):text.index("### Review round N")]
+    for phrase in ("command not on allowlist", "cd outside own worktree", "**Promote**",
+                   "fast tier blocked: <that line>", "policy deny", "guarded path",
+                   "job folder is orchestrator-owned", "source `tool-gate`"):
+        assert phrase in check, phrase
+    # the safety denials are checked before the promote rule
+    assert check.index("job folder is orchestrator-owned") < check.index("command not on allowlist")
+    # the phrases are exactly what the gate prints
+    gate = (KIT / "factory" / "factorylib" / "toolgate.py").read_text()
+    for phrase in ("command not on allowlist", "cd outside own worktree", "policy deny",
+                   "guarded path", "path outside the worktree",
+                   "job folder is orchestrator-owned"):
+        assert phrase in gate, phrase
+    for role in ("fast-builder", "fast-fixer"):
+        assert "decide failure" not in (FAST_AGENTS / f"{role}.md").read_text()

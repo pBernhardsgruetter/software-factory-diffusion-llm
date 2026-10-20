@@ -16,20 +16,9 @@ values everywhere below.
 ## Rules
 
 - **Denied tool calls.** If a tool call is denied with a reason starting
-  `needs human:`, stop. Change the first line of `build.md` to
-  `STATUS: BLOCKED` and quote the reason under `## Blocked`. Do not try another
-  way around it.
-- **Unclear failures.** When a command fails and the cause is unclear, ask the
-  failure decision. `<factory>` is the job folder's grandparent: drop the last
-  two parts (`jobs/<id>/`) from the job folder. Example: job folder
-  `/home/u/app/factory/jobs/007-x/` gives `<factory>` = `/home/u/app/factory`,
-  so the command is `/home/u/app/factory/bin/decide`. Run:
-  `cd <worktree> && <factory>/bin/decide failure --job <id> --state-json '{"command":"<the command>","output_tail":"<last 20 lines of output>"}'`
-  `<id>` is the Job id from your first message.
-  Escape `"` and `\` inside the JSON strings and leave out `'` characters. It prints JSON.
-  Follow `apply.action`: `retry` = run the command once more; `fix` = fix the
-  code; `blocked` = set `STATUS: BLOCKED` quoting the output. If decide itself
-  fails, treat it as `fix`.
+  `needs human:` or `factory tool-gate: policy deny`, stop. Change the first
+  line of `build.md` to `STATUS: BLOCKED` and quote the full reason under
+  `## Blocked`. Do not try another way around it.
 
 ## Steps
 
