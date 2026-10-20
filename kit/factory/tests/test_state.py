@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -287,8 +288,18 @@ def test_huge_binary_diff_is_capped_and_json_serialisable(env):
     blob = json.dumps(s)
     assert len(blob) <= cap
     assert "package-lock.json" in s["rule_hits"]
-    assert "Binary files" in s["diff"] or "logo.png" in s["diff_stat"]
     assert "truncated" in s["diff"]
+
+
+def test_small_binary_diff_says_binary_files_differ(env):
+    root, job, _ = env
+    wt = job.worktree
+    (wt / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n\x00" + os.urandom(500))
+    git(wt, "add", "logo.png")
+    git(wt, "commit", "-m", "png")
+    s = build_state("escalation", root, job, {})
+    assert "Binary files" in s["diff"] and "logo.png" in s["diff"]
+    assert "truncated" not in s["diff"]
 
 
 def test_cap_is_split_across_large_fields(env):
@@ -299,3 +310,144 @@ def test_cap_is_split_across_large_fields(env):
     s = build_state("clarify", root, job, {"scout": "z\n" * cap})
     assert len(json.dumps(s)) <= cap
     assert len(s["scout"]) < cap
+
+
+def _many_files(wt, n=6000, tag="f"):
+    d = wt / "src" / "generated"
+    d.mkdir(parents=True, exist_ok=True)
+    for i in range(n):
+        (d / (f"{tag}-{i:05d}-" + ("a" * 40) + ".txt")).write_text(f"{i}\n")
+    git(wt, "add", "-A")
+    git(wt, "commit", "-m", "many files")
+
+
+def test_rereview_git_failure_forces_unknown(env):
+    root, job, _ = env
+    job.worktree = job.worktree / "does-not-exist"
+    s = build_state("rereview", root, job, {})
+    assert [r["name"] for r in s["reviewers"]] == ["security", "ux", "ui", "code"]
+    for r in s["reviewers"]:
+        assert r["last_verdict"] == "UNKNOWN"
+        assert r["delta_stat"] == "<git diff failed>"
+
+
+def test_sha_must_fullmatch(env):
+    root, job, c1 = env
+    job.raw["review_commits"]["security"] = c1 + "\n"
+    by = {r["name"]: r for r in build_state("rereview", root, job, {})["reviewers"]}
+    assert "src/a.ts" in by["security"]["delta_stat"]  # fell back to the full diff
+
+
+def test_escalation_many_paths_within_cap(env):
+    root, job, _ = env
+    _many_files(job.worktree)
+    cap = load_config(root)["decide"]["state_char_cap"]
+    s = build_state("escalation", root, job, {})
+    assert len(json.dumps(s)) <= cap
+    assert re.fullmatch(r"…\[\d+ more paths\]", s["changed_paths"][-1])
+    kept = len(s["changed_paths"]) - 1
+    assert kept + int(re.search(r"\d+", s["changed_paths"][-1]).group()) >= 6000
+
+
+def test_rereview_many_paths_within_cap(env):
+    root, job, _ = env
+    _many_files(job.worktree)
+    cap = load_config(root)["decide"]["state_char_cap"]
+    s = build_state("rereview", root, job, {})
+    assert len(json.dumps(s)) <= cap
+    assert [r["name"] for r in s["reviewers"]] == ["security", "ux", "ui", "code"]
+    assert all(r["delta_stat"] for r in s["reviewers"])
+
+
+def test_rule_hits_computed_before_path_truncation(env):
+    root, job, _ = env
+    wt = job.worktree
+    _many_files(wt, n=5999)
+    (wt / "zzz").mkdir()
+    (wt / "zzz" / "package-lock.json").write_text("{}\n")  # sorts last: path #5999
+    git(wt, "add", "zzz/package-lock.json")
+    git(wt, "commit", "-m", "lock")
+    cap = load_config(root)["decide"]["state_char_cap"]
+    s = build_state("escalation", root, job, {})
+    assert len(json.dumps(s)) <= cap
+    assert "zzz/package-lock.json" in s["rule_hits"]
+    assert "zzz/package-lock.json" not in s["changed_paths"]  # truncated away
+    assert re.fullmatch(r"…\[\d+ more paths\]", s["changed_paths"][-1])
+
+
+def test_list_item_strings_are_capped(env):
+    root, job, _ = env
+    cap = load_config(root)["decide"]["state_char_cap"]
+    big = "w" * (cap * 2)
+    s = build_state("visual", root, job, {"round": 1, "observations": [big, "ok"]})
+    assert len(json.dumps(s)) <= cap and s["observations"][1] == "ok"
+    s = build_state("finding", root, job, {"findings": [{"reviewer": "code", "text": big}]})
+    assert len(json.dumps(s)) <= cap
+    s = build_state("assumptions", root, job, {"assumptions": [big] * 10})
+    assert len(json.dumps(s)) <= cap
+
+
+def test_state_never_exceeds_cap_for_many_list_items(env):
+    root, job, _ = env
+    cap = load_config(root)["decide"]["state_char_cap"]
+    items = [{"reviewer": "code", "text": "x" * 3000} for _ in range(500)]
+    s = build_state("finding", root, job, {"findings": items})
+    assert len(json.dumps(s)) <= cap
+    assert len(s["findings"]) == 500  # all kept, each shortened
+    many = [{"reviewer": "code", "text": "x" * 40} for _ in range(20000)]
+    s = build_state("finding", root, job, {"findings": many})
+    assert len(json.dumps(s)) <= cap
+    assert re.fullmatch(r"…\[\d+ more items\]", s["findings"][-1]["text"])
+
+
+def test_secret_at_cut_point_is_redacted(env):
+    root, job, _ = env
+    wt = job.worktree
+    cap = load_config(root)["decide"]["state_char_cap"]
+    key = "sk-or-v1-" + "0123456789abcdef" * 4
+    n = 400_000
+
+    def commit(content):
+        (wt / "big.txt").write_text(content)
+        git(wt, "add", "big.txt")
+        git(wt, "commit", "-m", "big")
+
+    commit("x" * n)  # probe: same-length content gives the same diff header
+    diff = git(wt, "diff", "main...HEAD")
+    header = diff.index("+" + "x" * 50)
+    git(wt, "reset", "-q", "--hard", "HEAD~1")
+    cut = (cap // 3) // 2  # escalation: spec, diff_stat, diff share the cap; head = half
+    start = cut - header - 1 - 30  # key straddles the cut point
+    commit("x" * start + " " + key + " " + "x" * (n - start - len(key) - 2))
+    s = build_state("escalation", root, job, {})
+    blob = json.dumps(s)
+    assert "truncated" in s["diff"]
+    assert "sk-or-v1" not in blob
+    assert "0123456789abcdef"[:8] + "0123456789ab" not in blob
+    assert "0123456789abcdef0123" not in blob
+
+
+def test_redact_patterns_from_config_apply(env):
+    root, job, _ = env
+    cfg = json.loads((root / "factory" / "config.json").read_text())
+    cfg["redact_patterns"] = ["INTERNAL-[0-9]+"]
+    (root / "factory" / "config.json").write_text(json.dumps(cfg))
+    s = build_state("failure", root, job, {"command": "x", "output_tail": "ref INTERNAL-12345 here"})
+    assert "INTERNAL-12345" not in s["output_tail"]
+
+
+def test_extra_cannot_clear_rule_hits(env):
+    root, job, _ = env
+    wt = job.worktree
+    (wt / "package-lock.json").write_text("{}\n")
+    git(wt, "add", "package-lock.json")
+    git(wt, "commit", "-m", "lock")
+    s = build_state("escalation", root, job, {"rule_hits": [], "changed_paths": []})
+    assert s["rule_hits"] == ["package-lock.json"]
+    assert "package-lock.json" in s["changed_paths"]
+    s = build_state("escalation", root, job, {
+        "rule_hits": ["manual", "package-lock.json"], "changed_paths": ["extra.txt"]})
+    assert s["rule_hits"] == ["package-lock.json", "manual"]
+    assert s["changed_paths"][-1] == "extra.txt" and "package-lock.json" in s["changed_paths"]
+    s = build_state("escalation", root, job, {"rule_hits": "nonsense"})
+    assert s["rule_hits"] == ["package-lock.json"]
