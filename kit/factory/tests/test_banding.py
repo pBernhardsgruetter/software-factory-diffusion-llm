@@ -1,10 +1,12 @@
+import pytest
+
 from factorylib.banding import Banded, band_answers
 
 QUESTIONS = {
     "flag": {"type": "boolean", "instructions": "?"},
     "danger": {"type": "boolean", "instructions": "?", "risk": True},
     "cat": {"type": "choice", "instructions": "?", "criteria": {"a": "A", "b": "B"}},
-    "urg": {"type": "score", "instructions": "?", "criteria": ["lo", "mid", "hi"]},
+    "urg": {"type": "score", "instructions": "?", "criteria": ["lo", "mid", "hi", "max"]},
 }
 
 
@@ -92,3 +94,72 @@ def test_boolean_out_of_range_is_uncertain():
     qs = {"flag": QUESTIONS["flag"]}
     assert band_answers(qs, {"flag": b(1.5)}, {})["flag"].confident is False
     assert band_answers(qs, {"flag": {"type": "boolean", "probability": True}}, {})["flag"].value is None
+
+
+def _choice(probs, choice="x"):
+    qs = {"c": {"type": "choice", "instructions": "?", "criteria": {"x": "X", "y": "Y"}}}
+    return band_answers(qs, {"c": {"type": "choice", "choice": choice, "probabilities": probs}}, {})["c"]
+
+
+def _score(probs, score=1.0):
+    ans = {"urg": {"type": "score", "score": score, "probabilities": probs}}
+    return band_answers({"urg": QUESTIONS["urg"]}, ans, {})["urg"]
+
+
+def test_choice_probs_not_summing_to_one_uncertain():
+    r = _choice({"x": 0.9, "y": 0.9})
+    assert (r.value, r.p, r.confident) == (None, 0.0, False)
+
+
+def test_choice_missing_option_sum_low_uncertain():
+    r = _choice({"x": 0.8})
+    assert (r.value, r.p, r.confident) == (None, 0.0, False)
+    assert _choice({"x": 0.8, "y": 0.2}).confident is True
+    assert _choice({"x": 0.8, "y": 0.18}).confident is True  # within tolerance
+
+
+def test_score_probs_not_summing_to_one_uncertain():
+    r = _score({"0": 0.9, "1": 0.9, "2": 0.0, "3": 0.0})
+    assert (r.value, r.p, r.confident) == (None, 0.0, False)
+    assert _score({"0": 0.05, "1": 0.05, "2": 0.8, "3": 0.1}).confident is True
+
+
+def test_score_out_of_range_uncertain():
+    probs = {"0": 0.05, "1": 0.05, "2": 0.8, "3": 0.1}
+    for bad in (-0.5, 3.5, 99.0):
+        r = _score(probs, bad)
+        assert (r.value, r.p, r.confident) == (None, 0.0, False)
+    assert _score(probs, 3.0).value == 3.0
+    assert _score(probs, 0.0).value == 0.0
+    assert _score(probs, 3.04).confident is True  # tolerance
+
+
+def test_score_bad_rung_key_uncertain():
+    for probs in (
+        {"0": 0.1, "1": 0.1, "2": 0.1, "9": 0.7},      # out of range
+        {"0": 0.1, "1": 0.1, "2": 0.1, "high": 0.7},   # not an integer
+        {"0": 0.1, "1": 0.1, "2": 0.1, "-1": 0.7},     # negative
+        {"0": 0.1, "1": 0.1, "2": 0.1, "1.5": 0.7},    # non-integer string
+    ):
+        r = _score(probs)
+        assert (r.value, r.p, r.confident) == (None, 0.0, False)
+
+
+@pytest.mark.parametrize("t", [0.8, 0.85, 0.9, 0.95])
+@pytest.mark.parametrize("which", ["t", "1-t"])
+def test_boundary_exact_threshold_is_confident(t, which):
+    qs = {"flag": QUESTIONS["flag"]}
+    p = t if which == "t" else 1 - t
+    r = band_answers(qs, {"flag": b(p)}, {"flag": t})["flag"]
+    assert r.confident is True
+
+
+def test_boundary_float_unsafe_lower_case():
+    qs = {"flag": QUESTIONS["flag"]}
+    assert band_answers(qs, {"flag": b(0.1)}, {"flag": 0.9})["flag"].confident is True
+
+
+def test_boundary_choice_and_score_at_threshold():
+    assert _choice({"x": 0.75, "y": 0.25}).confident is True
+    assert _score({"0": 0.05, "1": 0.15, "2": 0.75, "3": 0.05}).confident is True
+    assert _choice({"x": 0.74, "y": 0.26}).confident is False
