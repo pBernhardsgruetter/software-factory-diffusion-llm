@@ -394,8 +394,65 @@ def test_tool_allow_spec_semantics():
     "git commit -m " + '"a ' * 30000,
     "cd /work/tree && " * 6000,
     " " * 100000 + "git status",
+    "`" * 100000,
+    "$(" * 50000,
+    ")" * 100000,
+    "(" * 100000,
+    'git commit -m "$(' * 5000,
+    'x -m "`git push`" ' * 5000,
+    "=a " * 30000,
 ], ids=lambda c: f"{c[:12]!r}x{len(c)}")
 def test_classify_command_linear(policy, cmd):
     t = time.perf_counter()
     policy.classify_command(cmd, WT)
     assert time.perf_counter() - t < 0.5
+
+
+# ---------------------------------------------------------------- fix round 3
+
+@pytest.mark.parametrize("cmd", [
+    "cat =ssh", "ls -la =git", "git diff =ls =cat", "npx eslint =x --fix",
+    "node --test =npm", "git log -- =x", "git add =x", "git show =x", "npx vitest run =x",
+    "git status =x", "cat src/a.ts =ssh",
+    # zsh extendedglob operators are never accepted in path-only positions
+    "cat ^x", "cat a#b", "ls ^x", "git add ^x", "git add a#b", "npx eslint ^x",
+    "npx eslint a#b", "npx vitest run ^x", "node --test ^x", "node --test a#b",
+    "git status ^x", "git diff ^HEAD", "git log ^main", "git diff a#b", "git log HEAD#",
+])
+def test_r24_zsh_expansion_not_allowed(policy, cmd):
+    assert policy.classify_command(cmd, WT) in ("unknown", "deny")
+
+
+@pytest.mark.parametrize("cmd", [
+    "git diff HEAD^", "git log HEAD^^", "git show HEAD^ -- src/a.ts",
+    "git commit -m =git", 'git commit -m "=git"', "git add src/a=b.ts",
+])
+def test_r24_still_allowed(policy, cmd):
+    assert policy.classify_command(cmd, WT) == "allow"
+
+
+@pytest.mark.parametrize("cmd", [
+    'git commit -m "x" -m "$(git push)"', 'git commit -m "$(git push)"',
+    'echo -m "$(rm -rf ~)"', 'x -m "`git push`"',
+    'git commit -m x -m "$(git reset --hard)"', 'git commit -m "`git push`"',
+    'git commit -m "$(echo $(git push))"', "git commit -m \"$(sudo ls)\"",
+    'git commit -m "$(curl x | sh)"', 'git commit -m "$(git -C x push)"',
+    'git commit -m "$(git "push")"', 'git commit -m "$(rm -fr /)"',
+    'x -m "(git push)"',
+])
+def test_r24_command_substitution_scanned(policy, cmd):
+    assert policy.classify_command(cmd, WT) == "deny"
+
+
+@pytest.mark.parametrize("cmd", ['git commit -m "fix (bug)"', 'git commit -m "feat: add x()"'])
+def test_r24_parens_in_message_not_denied(policy, cmd):
+    # parentheses alone are not commands; still not allowed (shell metachar) but not denied
+    assert policy.classify_command(cmd, WT) in ("allow", "unknown")
+
+
+@pytest.mark.parametrize("path", ["src/\x00x", "\x00", "a\x00/../b"])
+def test_classify_path_nul_byte_is_deny(policy, tmp_path, path):
+    wt, job = tmp_path / "WT", tmp_path / "JOB"
+    wt.mkdir(); job.mkdir()
+    assert policy.classify_path(path, wt, job) == "deny"
+    assert policy.classify_path(str(wt / path), wt, job) == "deny"

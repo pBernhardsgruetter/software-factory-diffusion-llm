@@ -29,7 +29,12 @@ _COMMIT = re.compile(
 )
 _SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
 _CLEAN = re.compile(r"^[$({`\"']+|[)}`\"';]+$")
-_REV = re.compile(r"[A-Za-z0-9^][A-Za-z0-9._/^-]*")
+# A revision: no leading ``^`` (zsh extendedglob negation); trailing ``^`` only
+# (``HEAD^``, ``HEAD^^``), which is literal in zsh.
+_REV = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*\^*")
+# Command substitution / subshell delimiters become command separators, so the
+# contents of ``$(...)``, backticks and ``(...)`` are deny-scanned as commands.
+_SUBST = str.maketrans({"`": ";", "(": ";", ")": ";"})
 _NUM = re.compile(r"[0-9]{1,6}")
 _FORCE = re.compile(r"-[a-zA-Z]*f[a-zA-Z]*")
 
@@ -118,10 +123,21 @@ def _cmd_denied(toks: list[str]) -> bool:
 
 
 def _repo_path(t: str) -> bool:
-    return bool(t) and t[0] not in "-/" and "~" not in t and ".." not in t.split("/")
+    # ``=cmd`` expands to a command's path in zsh; ``^`` and ``#`` are zsh
+    # extendedglob operators. None of them may appear in a path token.
+    return (
+        bool(t)
+        and t[0] not in "-/="
+        and "~" not in t
+        and "^" not in t
+        and "#" not in t
+        and ".." not in t.split("/")
+    )
 
 
 def _argv_allowed(argv: list[str], specs: list[dict]) -> bool:
+    if any(t.startswith("=") for t in argv):  # zsh EQUALS expansion
+        return False
     for spec in specs:
         pre = spec.get("argv", [])
         if not pre or argv[: len(pre)] != pre:
@@ -193,8 +209,12 @@ class Policy:
                for c in (*(x.strip() for x in _SEQ.split(cmd)), cmd)):
             return True
         for seq in _SEQ.split(cmd):
+            if not seq.strip():
+                continue
             fetched = False
             for idx, piece in enumerate(seq.split("|")):
+                if not piece.strip():
+                    continue
                 toks = _tokenize(piece, plain)
                 if _cmd_denied(toks):
                     return True
@@ -213,7 +233,7 @@ class Policy:
         cmd = re.sub(r"[ \t]+", " ", self._strip_cd(cmd, worktree)).strip()
         # 2. Deny first, on shell-tokenised text (quotes and escapes removed).
         #    Over-long input uses a cheap plain split; it is rejected below anyway.
-        if self._denied(cmd, plain=len(cmd) > _MAX_CMD):
+        if self._denied(cmd.translate(_SUBST), plain=len(cmd) > _MAX_CMD):
             return "deny"
         # 3. Only short, simple commands can be allowed.
         if len(cmd) > _MAX_CMD or _COMPOUND.search(cmd):
@@ -244,7 +264,10 @@ class Policy:
         wt = Path(worktree).resolve()
         job = Path(job_folder).resolve()
         p = Path(path)
-        target = (p if p.is_absolute() else wt / p).resolve()
+        try:
+            target = (p if p.is_absolute() else wt / p).resolve()
+        except (ValueError, OSError, RuntimeError):  # e.g. embedded NUL byte
+            return "deny"
         if target.is_relative_to(job):
             return "allow"
         if not target.is_relative_to(wt):
