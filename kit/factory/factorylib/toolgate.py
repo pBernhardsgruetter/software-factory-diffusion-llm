@@ -33,6 +33,12 @@ headless. Only stdlib is imported at module level; ``policy`` and
 Headless, an ``unknown`` command is denied without calling Decide (R31): the
 child has no API key. Headless, the job folder is orchestrator-owned: a child may
 write only ``<job>/build.md`` there; any other job-folder path needs a human.
+
+Audit log: ``main`` appends one ``{"kind": "gate", ...}`` line per in-scope event
+(every printed decision, and a D10 ``defer``) to ``<root>/factory/tool-gate.jsonl``
+with the decision's source (``policy``, ``d10``, ``scope``, ``headless``,
+``error``) and its reason, redacted. Logging never changes the decision or the
+exit code; a reason that cannot be redacted is not logged at all.
 """
 
 from __future__ import annotations
@@ -43,6 +49,7 @@ import os
 import re
 import signal
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 GATED_TOOLS = ("Bash", "Edit", "Write", "MultiEdit", "NotebookEdit")
@@ -53,6 +60,7 @@ _SCOPE_MAX = 4096  # longest command scanned for ``git -C`` scope
 # Wall-clock budget for one hook run. The hook is registered with a 30 s
 # timeout; a cold ``uv run`` start takes a few seconds and Decide at most 2 x 5 s.
 BUDGET_S = 20.0
+AUDIT_S = 2.0  # wall-clock budget for the audit-log append
 
 # A path the shell takes literally: double-quoted without expansions,
 # single-quoted, or bare without globs, ``~``, braces or operators.
@@ -300,21 +308,23 @@ def _d10_p(rec: dict) -> str:
         return "n/a"
 
 
-def _gate(event, root: Path, policy, headless: bool, decide, roots) -> dict | None:
+def _gate(event, root: Path, policy, headless: bool, decide, roots, meta: dict) -> dict | None:
     sc = _resolve(event, root, headless, roots)
     if sc is None:
         return None
+    meta["job"] = sc.worktree.name if sc.worktree is not None else None
     show = sc.text[:SHOW_CHARS]
 
-    def out(permission, reason):
+    def out(permission, reason, source="policy"):
+        meta["source"] = source
         return decision(permission, reason, headless=headless)
 
     if sc.tool != "Bash":
         if sc.problem is not None:
-            return out("ask", f"{sc.problem} for {sc.tool}: {show}")
+            return out("ask", f"{sc.problem} for {sc.tool}: {show}", "scope")
         job_folder = Path(root) / "factory" / "jobs" / sc.worktree.name
         if headless and _orchestrator_owned(sc.pcmd, job_folder):
-            return out("ask", f"job folder is orchestrator-owned: {show}")
+            return out("ask", f"job folder is orchestrator-owned: {show}", "scope")
         verdict = policy.classify_path(sc.pcmd, sc.worktree, job_folder)
         if verdict == "deny":
             return out("deny", f"path outside the worktree: {show}")
@@ -328,7 +338,7 @@ def _gate(event, root: Path, policy, headless: bool, decide, roots) -> dict | No
     if verdict == "deny":
         return out("deny", f"policy deny: {show}")
     if sc.problem is not None:
-        return out("ask", f"{sc.problem}: {show}")
+        return out("ask", f"{sc.problem}: {show}", "scope")
     if verdict == "ask":
         return out("ask", f"policy ask: {show}")
     if verdict == "allow":
@@ -336,7 +346,7 @@ def _gate(event, root: Path, policy, headless: bool, decide, roots) -> dict | No
     if verdict != "unknown":
         raise ValueError(f"unexpected command verdict {verdict!r}")
     if headless:  # R31: no key in the child, never call Decide
-        return out("ask", f"command not on allowlist: {show}")
+        return out("ask", f"command not on allowlist: {show}", "headless")
 
     if decide is None:
         decide = _mod("run").run_decision
@@ -346,24 +356,29 @@ def _gate(event, root: Path, policy, headless: bool, decide, roots) -> dict | No
     apply = rec.get("apply") if isinstance(rec, dict) else None
     perm = apply.get("permission") if isinstance(apply, dict) else None
     if perm == "defer":
-        return None  # shadow mode or fallback: Claude Code's normal flow
+        # shadow mode or fallback: Claude Code's normal flow
+        meta.update(source="d10", deferred=True, reason=f"D10 p={_d10_p(rec)}: defer")
+        return None
     if perm in ("allow", "ask", "deny"):
-        return out(perm, f"D10 p={_d10_p(rec)}")
-    return out("ask", f"D10 gave no usable permission ({str(perm)[:40]!r})")
+        return out(perm, f"D10 p={_d10_p(rec)}", "d10")
+    return out("ask", f"D10 gave no usable permission ({str(perm)[:40]!r})", "d10")
 
 
 def gate(event: dict, *, root: Path, policy, headless: bool, decide=None,
-         scope_roots: list[Path] | None = None) -> dict | None:
+         scope_roots: list[Path] | None = None, meta: dict | None = None) -> dict | None:
     """The hook decision for one PreToolUse ``event``; ``None`` means defer.
 
     ``decide`` defaults to ``run.run_decision`` (imported lazily).
     ``scope_roots`` (default ``[root]``) are the roots whose ``-factory`` dirs are
     in scope. Any exception is a decision too: ``ask`` (main session) or ``deny``
-    with ``needs human:`` (headless).
+    with ``needs human:`` (headless). ``meta`` (optional) receives the audit
+    fields: ``source``, ``job`` and, for a D10 defer, ``deferred`` / ``reason``.
     """
+    meta = {} if meta is None else meta
     try:
-        return _gate(event, Path(root), policy, headless, decide, scope_roots)
+        return _gate(event, Path(root), policy, headless, decide, scope_roots, meta)
     except Exception as exc:
+        meta["source"] = "error"
         return decision("ask", f"error: {_err(exc)}", headless=headless)
 
 
@@ -453,21 +468,70 @@ def _disarm(armed) -> None:
         pass
 
 
-def _run(raw: str, headless: bool, root: Path | None, decide, env) -> dict | None:
-    event = json.loads(raw)
+def _run(raw: str, headless: bool, root: Path | None, decide, env, meta: dict) -> dict | None:
     roots = [Path(root)] if root is not None else gate_roots(env)
     root = roots[0]
+    meta["root"] = root
+    event = json.loads(raw)
+    if isinstance(event, dict) and isinstance(event.get("tool_name"), str):
+        meta["tool"] = event["tool_name"]
     if not headless and _resolve(event, root, headless, roots) is None:
         return None  # out of scope: the user's own session
     policy = _mod("policy").load_policy(root)
     return gate(event, root=root, policy=policy, headless=headless, decide=decide,
-                scope_roots=roots)
+                scope_roots=roots, meta=meta)
+
+
+def _audit(out: dict | None, meta: dict, headless: bool) -> None:
+    """Append one ``kind: gate`` line to ``<root>/factory/tool-gate.jsonl``.
+
+    Only for in-scope events (a printed decision, or a D10 defer). Never raises
+    and never blocks for long (its own ``AUDIT_S`` alarm). The reason is redacted
+    (built-in plus configured ``redact_patterns``) and capped at SHOW_CHARS; if
+    the redaction module cannot load, nothing is written.
+    """
+    armed = None
+    try:
+        root = meta.get("root")
+        if root is None or (out is None and not meta.get("deferred")):
+            return
+        armed = _arm(AUDIT_S)
+        if out is not None:
+            h = out["hookSpecificOutput"]
+            perm, reason = h["permissionDecision"], h["permissionDecisionReason"]
+        else:
+            perm, reason = "defer", meta.get("reason") or "defer"
+        redact_obj = _mod("redact").redact_obj
+        patterns: list = []
+        try:
+            cfg = json.loads((Path(root) / "factory" / "config.json").read_text())
+            patterns = [x for x in cfg.get("redact_patterns") or [] if isinstance(x, str)]
+            reason = redact_obj(str(reason), patterns)[0]
+        except Exception:  # unreadable config or a bad configured pattern
+            reason = redact_obj(str(reason), [])[0]
+        rec = {"kind": "gate",
+               "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+               "headless": headless, "tool": meta.get("tool"), "permission": perm,
+               "source": meta.get("source") or "error", "reason": reason[:SHOW_CHARS],
+               "job": meta.get("job")}
+        data = (json.dumps(rec) + "\n").encode()
+        fd = os.open(Path(root) / "factory" / "tool-gate.jsonl",
+                     os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        try:
+            os.write(fd, data)  # one write: concurrent gates never interleave a line
+        finally:
+            os.close(fd)
+    except BaseException:  # noqa: BLE001 (the log never changes the decision)
+        pass
+    finally:
+        _disarm(armed)
 
 
 def main(stdin=None, stdout=None, env=None, root: Path | None = None, decide=None) -> int:
     """Read one PreToolUse event on stdin, print the decision (or nothing). Always 0."""
     headless = False
     out = None
+    meta: dict = {}
     real_stdout = stdout or sys.stdout
     saved_stdout = sys.stdout
     try:
@@ -478,15 +542,25 @@ def main(stdin=None, stdout=None, env=None, root: Path | None = None, decide=Non
         try:
             armed = _arm(BUDGET_S)
             try:
-                out = _run((stdin or sys.stdin).read(), headless, root, decide, env)
+                out = _run((stdin or sys.stdin).read(), headless, root, decide, env, meta)
             finally:
                 _disarm(armed)
         except GateTimeout:
+            meta["source"] = "error"
             out = decision("ask", f"error: timed out after {BUDGET_S:g}s", headless=headless)
         except BaseException as exc:  # noqa: BLE001 (never fail open, R27a)
+            meta["source"] = "error"
             out = decision("ask", f"error: {_err(exc)}", headless=headless)
     except BaseException as exc:  # noqa: BLE001 (e.g. a late GateTimeout)
+        meta["source"] = "error"
         out = decision("ask", f"error: {_err(exc)}", headless=headless)
+    finally:
+        sys.stdout = saved_stdout
+    try:
+        sys.stdout = sys.stderr
+        _audit(out, meta, headless)
+    except BaseException:  # noqa: BLE001 (e.g. a GateTimeout racing _disarm)
+        pass
     finally:
         sys.stdout = saved_stdout
     if out is not None:

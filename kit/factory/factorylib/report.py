@@ -1,7 +1,7 @@
 """``decide report``: are the shadow-mode decisions calibrated enough to go active?
 
 Reads every logged decision record (``factory/jobs/*/decisions.jsonl`` plus
-``factory/tool-gate.jsonl``) and the outcome records (ground truth recorded later
+``factory/tool-gate.jsonl``, whose ``kind: gate`` audit lines are ignored) and the outcome records (ground truth recorded later
 by the orchestrator) and computes, per decision name:
 
 * ``cases``: decision records logged (error records included).
@@ -59,7 +59,11 @@ def _ts(value) -> datetime | None:
 
 
 def _read(path: Path):
-    """Yield (parsed object or None) per non-blank line; None marks a bad line."""
+    """Yield (parsed object or None) per non-blank line; None marks a bad line.
+
+    Tool-gate audit lines (``kind == "gate"``) are not decisions: they are left
+    out entirely, never counted as skipped.
+    """
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -72,6 +76,8 @@ def _read(path: Path):
             obj = json.loads(line)
         except ValueError:
             yield None
+            continue
+        if isinstance(obj, dict) and obj.get("kind") == "gate":
             continue
         yield obj if isinstance(obj, dict) else None
 

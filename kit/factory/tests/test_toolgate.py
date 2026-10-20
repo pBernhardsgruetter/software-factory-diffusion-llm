@@ -972,3 +972,119 @@ def test_i3_main_session_job_folder_unchanged(env):
         for cwd in (root, wt):
             assert gate(edit(p, cwd, tool="Write"), root=root, policy=policy,
                         headless=False, decide=NoDecide()) is None
+
+
+# ------------------------------------------------------- final review (I7)
+
+
+def gate_log(root):
+    p = root / "factory" / "tool-gate.jsonl"
+    if not p.exists():
+        return []
+    return [r for r in map(json.loads, p.read_text().splitlines()) if r.get("kind") == "gate"]
+
+
+def main_once(ev, root, *, headless, decide=None, env=None):
+    out = io.StringIO()
+    e = {"FACTORY_HEADLESS": "1"} if headless else {}
+    e.update(env or {})
+    code = toolgate.main(stdin=io.StringIO(ev if isinstance(ev, str) else json.dumps(ev)),
+                         stdout=out, env=e, root=root, decide=decide or NoDecide())
+    assert code == 0
+    return out.getvalue()
+
+
+@pytest.mark.parametrize("case", ["allow", "deny", "guarded", "headless", "scope", "jobdir",
+                                  "error", "d10", "defer", "nul"])
+def test_i7_every_in_scope_event_is_logged(env, case):
+    root, wt = env["root"], env["wt"]
+    job = root / "factory" / "jobs" / "001-x"
+    ev, headless, decide = {
+        "allow": (bash("git status", wt), True, None),
+        "deny": (bash(f"cd {wt} && git push", root), False, None),
+        "guarded": (edit(wt / ".claude" / "x.json", wt), True, None),
+        "headless": (bash("make lint", wt), True, None),
+        "scope": (bash("git status", root), True, None),
+        "jobdir": (edit(job / "job.json", wt, tool="Write"), True, None),
+        "error": ("not json{", True, None),
+        "d10": (bash(f"cd {wt} && make x", root), False, FakeDecide("ask", p=0.8)),
+        "defer": (bash(f"cd {wt} && make x", root), False, FakeDecide("defer", p=0.7)),
+        "nul": (edit(f"{wt}/a\0b", root), False, None),
+    }[case]
+    printed = main_once(ev, root, headless=headless, decide=decide)
+    (rec,) = gate_log(root)
+    want_source = {"allow": "policy", "deny": "policy", "guarded": "policy",
+                   "headless": "headless", "scope": "scope", "jobdir": "scope",
+                   "error": "error", "d10": "d10", "defer": "d10", "nul": "error"}[case]
+    assert rec["source"] == want_source, rec
+    assert set(rec) == {"kind", "ts", "headless", "tool", "permission", "source", "reason", "job"}
+    assert rec["headless"] is headless
+    assert len(rec["reason"]) <= 200
+    if case == "defer":
+        assert printed == "" and rec["permission"] == "defer"
+    else:
+        perm, reason = hso(json.loads(printed))
+        assert rec["permission"] == perm and rec["reason"] == reason[:200]
+    if case in ("allow", "deny", "headless", "jobdir", "d10", "defer"):
+        assert rec["job"] == "001-x"
+    if case in ("scope", "error"):
+        assert rec["job"] is None
+    assert rec["tool"] == (None if case == "error" else ev["tool_name"])
+
+
+def test_i7_out_of_scope_is_not_logged(env):
+    root = env["root"]
+    assert main_once(bash("git push", root), root, headless=False) == ""
+    assert main_once(edit(root / "src" / "a.js", root), root, headless=False) == ""
+    assert gate_log(root) == []
+
+
+def test_i7_reason_is_redacted(env):
+    root, wt = env["root"], env["wt"]
+    secret = "sk-or-v1-" + "a1b2c3d4" * 8
+    main_once(bash(f"curl -H 'Authorization: Bearer {secret}' x", wt), root, headless=True)
+    (rec,) = gate_log(root)
+    assert secret not in json.dumps(rec) and "[REDACTED]" in rec["reason"]
+
+
+def test_i7_config_redact_patterns_apply(env):
+    root, wt = env["root"], env["wt"]
+    cfg = json.loads((root / "factory" / "config.json").read_text())
+    cfg["redact_patterns"] = ["hunter2"]
+    (root / "factory" / "config.json").write_text(json.dumps(cfg))
+    main_once(bash("make hunter2", wt), root, headless=True)
+    (rec,) = gate_log(root)
+    assert "hunter2" not in rec["reason"]
+
+
+@pytest.mark.parametrize("headless", [True, False])
+def test_i7_log_failure_never_changes_the_decision(env, headless):
+    root, wt = env["root"], env["wt"]
+    ev = bash("git status", wt) if headless else bash(f"cd {wt} && git push", root)
+    want = main_once(ev, root, headless=headless)
+    (root / "factory" / "tool-gate.jsonl").unlink()
+    (root / "factory" / "tool-gate.jsonl").mkdir()  # every append now fails
+    assert main_once(ev, root, headless=headless) == want
+
+
+def test_i7_broken_redact_module_skips_the_log(env, monkeypatch):
+    root, wt = env["root"], env["wt"]
+    real = toolgate._mod
+
+    def mod(name):
+        if name == "redact":
+            raise ImportError("broken")
+        return real(name)
+
+    monkeypatch.setattr(toolgate, "_mod", mod)
+    printed = main_once(bash("git status", wt), root, headless=True)
+    assert hso(json.loads(printed))[0] == "allow"
+    assert gate_log(root) == []  # never written unredacted
+
+
+def test_i7_main_subprocess_logs(tmp_path):
+    root, wt = make_root(tmp_path, git=True)
+    r = run_main(json.dumps(bash("git status", wt)), cwd=wt, headless=True, root=root)
+    assert hso(json.loads(r.stdout))[0] == "allow"
+    (rec,) = gate_log(root)
+    assert rec["source"] == "policy" and rec["job"] == "001-x"

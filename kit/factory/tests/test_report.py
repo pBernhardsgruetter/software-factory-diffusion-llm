@@ -278,3 +278,14 @@ def test_malformed_records_do_not_crash(tmp_path):
     ])
     rep = build_report(tmp_path)
     assert rep["promote"]["paired"] == 0
+
+
+def test_i7_gate_audit_lines_are_not_skipped(tmp_path):
+    (tmp_path / "factory").mkdir(parents=True)
+    gate = {"kind": "gate", "ts": t(1), "headless": True, "tool": "Bash",
+            "permission": "allow", "source": "policy", "reason": "x", "job": "001-x"}
+    (tmp_path / "factory" / "tool-gate.jsonl").write_text(
+        json.dumps(gate) + "\n" + json.dumps(dec("toolgate", {"permission": "allow"}, ts=t(2)))
+        + "\n" + json.dumps({**gate, "decision": "toolgate"}) + "\n")
+    rep = build_report(tmp_path)
+    assert rep["skipped_lines"] == 0 and rep["toolgate"]["cases"] == 1
