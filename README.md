@@ -123,12 +123,65 @@ guardrail, not a sandbox:
   agent-written code with your user's rights.
 - `OPENROUTER_API_KEY` is in the main session's environment. With the `pi`
   harness the key is also in the Mercury 3 model's environment.
+- With the `claude-p` harness, `fast-coder` sets `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`,
+  so the Mercury roles' Bash runs in Claude Code's sandbox (bubblewrap + socat
+  on Linux) and never sees the key. That covers the fast roles only; the Opus
+  and Sonnet agents' Bash is guarded by the tool gate and permission rules.
 - For untrusted work, run the factory under OS-level sandboxing (a container or
   VM) with no push credentials and no secrets beyond the OpenRouter key.
 
 ## End-to-end results
 
-pending
+Four backlog items on the sample app (`factory-sandbox`, all decisions `active`
+except `clarify`, run headless with `claude -p`, Claude Code 2.1.304, Opus 5.5
+orchestrator). Wall clock excludes time waiting for a human; cost is the
+orchestrator session including its subagents (`total_cost_usd`).
+
+| Job | Tier | Rounds | Human | Wall clock | Opus/Sonnet | Mercury |
+|---|---|---|---|---|---|---|
+| 001 footer typo | fast → promoted | 1 | none | 295 s | $2.14 | $0.013 |
+| 002 dark-mode toggle | heavy | 3 | D3 product question | 575 s | $4.02 | $0.005 |
+| 003 login + bcrypt | heavy | 2 (+rework) | D3 ×4, needs-human, approve | 759 s | $5.76 | $0.005 |
+| 004 about-page copy | fast (Mercury 3 built it) | 1 | none | 242 s | $1.58 | $0.010 |
+
+Decide cost $0.00 throughout: every call was served by the `:free` model.
+`decide report` after the four jobs: 0 unsafe misses; triage and escalation at
+75% agreement over 4 paired cases each, far from the 20-case `ready` bar.
+
+What the runs showed:
+
+- **Escalation works as designed.** Job 003 escalated on two path rules
+  (`package.json`, `package-lock.json`), three D9 risk flags (auth,
+  dependencies, build_scripts) and the approver's own ESCALATE, and merged only
+  on `/factory approve`. `build_scripts` was a false positive.
+- **D3 asks real product questions** (002: follow the OS theme until the user
+  picks; 003: four assumptions about the demo login). **D2 asked a human about
+  a typo**, so `clarify` went back to shadow.
+- **D6 uncertain routes to the builder**, not the fast fixer (002 round 1),
+  which is the conservative path.
+- **Planted `git push`** (003 rework note): the builder refused from its
+  prompt, so the gate was not reached. Fed directly, the headless gate denies
+  `git push`, `rm -rf ~` and `curl … | sh` by policy, denies an unknown `nc -l`
+  as `needs human:`, and allows `npm test`.
+- **Mercury 3 needs its own `CLAUDE_CONFIG_DIR`.** A claude.ai login in
+  `~/.claude` beats `ANTHROPIC_AUTH_TOKEN` and is never sent to a third-party
+  URL, which gave a 401. `fast-coder` now uses `factory/.fast-coder/`.
+- **The scrubbed child needs bubblewrap and socat** on Linux (job 001's
+  fast-builder failed without socat and was promoted). `fast-coder` now
+  refuses to start a Bash role without them.
+- **The sandbox leaves empty mount stubs** (`.env*`, `.npmrc`, lockfiles, ...)
+  in the worktree, which blocked `git worktree remove`. The merge step runs
+  `fast-coder clean-stubs` first.
+- **Prompt fixes from the runs:** reviewers run each `agent-browser` call as a
+  single prefix-matchable command, read files with Read, retry one denied Bash
+  call and never PASS an unrun check, and stop dev servers with `lsof` + `kill`;
+  the approver's escalation reason comes from `## For the human`.
+- **Opus 5.5 needs Claude Code ≥ 2.1.280.**
+- **Not worth it: a Mercury pre-check for the UI review.** The UI reviewer
+  cost $0.14–0.44 and 15–44 s per round, runs in parallel with the others, is
+  already skipped by D5 in intermediate rounds and must run before approval.
+  The builder (66–248 s, $0.8–2.5) and spec writer dominate; routing more jobs
+  to the fast tier is the bigger lever.
 
 ## Docs
 
