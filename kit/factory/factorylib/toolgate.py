@@ -13,7 +13,11 @@ or an edit tool's ``file_path`` / ``notebook_path``. Everything else (the user's
 own sessions) is out of scope and defers.
 
 Root: the main checkout the gate is installed in, located from this file
-(``<root>/factory/factorylib/toolgate.py``), never from the event (R40).
+(``<root>/factory/factorylib/toolgate.py``), never from the event (R40). The
+wrapper also passes its LOGICAL root (``FACTORY_GATE_ROOT``, for symlinked
+installs), accepted only when it holds this very file; the factory dirs of both
+roots are in scope (R41). A gate copy inside a job worktree (a session opened
+there) uses the sibling main checkout ``<x>-factory/<job>`` -> ``<x>``.
 
 A worktree is the first directory below the factory dir that holds a ``.git``
 entry; anything else under the factory dir has no worktree (ask / deny).
@@ -97,15 +101,29 @@ def decision(permission: str, reason: str, *, headless: bool) -> dict:
 # -------------------------------------------------------------------- scope
 
 
-def _factory_dirs(root: Path) -> list[Path]:
-    """``<root>/../<root.name>-factory``, lexically and resolved (resolved last)."""
-    fd = Path(os.path.normpath(Path(root).absolute().parent / f"{Path(root).name}-factory"))
-    out = [fd]
-    try:
-        out.append(fd.resolve())
-    except (OSError, RuntimeError, ValueError):
-        pass
+def _factory_dirs(roots: list[Path]) -> list[Path]:
+    """``<root>/../<root.name>-factory`` for each root, lexical and resolved forms."""
+    out: list[Path] = []
+    for root in roots:
+        root = Path(os.path.normpath(Path(root).absolute()))
+        forms = [root]
+        try:
+            forms.append(root.resolve())
+        except (OSError, RuntimeError, ValueError):
+            pass
+        for r in forms:
+            fd = r.parent / f"{r.name}-factory"
+            for d in (fd, _try_resolve(fd)):
+                if d is not None and d not in out:
+                    out.append(d)
     return out
+
+
+def _try_resolve(p: Path) -> Path | None:
+    try:
+        return p.resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
 
 
 def _locate(p: str, cwd: Path, fdirs: list[Path]) -> tuple[bool, Path | None]:
@@ -125,12 +143,11 @@ def _locate(p: str, cwd: Path, fdirs: list[Path]) -> tuple[bool, Path | None]:
         cands.append(path.resolve())
     except (OSError, RuntimeError, ValueError):
         pass
-    base = fdirs[-1]
     for c in cands:
         for fd in fdirs:
             if c == fd or c.is_relative_to(fd):
                 parts = c.relative_to(fd).parts
-                return True, _worktree(base / parts[0]) if parts else None
+                return True, _worktree(fd / parts[0]) if parts else None
     return False, None
 
 
@@ -176,7 +193,7 @@ def _first(groups) -> str:
     return next(g for g in groups if g is not None)
 
 
-def _resolve(event, root: Path, headless: bool) -> _Scope | None:
+def _resolve(event, root: Path, headless: bool, roots: list[Path] | None = None) -> _Scope | None:
     """The gate's view of ``event``, or ``None`` when it is out of scope.
 
     Raises ``ValueError`` for a malformed event (the caller answers ask / deny).
@@ -193,7 +210,7 @@ def _resolve(event, root: Path, headless: bool) -> _Scope | None:
         raise ValueError("tool_input missing or not an object")
     raw_cwd = event.get("cwd")
     cwd = Path(raw_cwd) if isinstance(raw_cwd, str) and os.path.isabs(raw_cwd) else Path.cwd()
-    fdirs = _factory_dirs(root)
+    fdirs = _factory_dirs(roots or [root])
     cwd_in, cwd_wt = _locate(str(cwd), cwd, fdirs)
     if not cwd_in:
         cwd_wt = None
@@ -258,8 +275,8 @@ def _d10_p(rec: dict) -> str:
         return "n/a"
 
 
-def _gate(event, root: Path, policy, headless: bool, decide) -> dict | None:
-    sc = _resolve(event, root, headless)
+def _gate(event, root: Path, policy, headless: bool, decide, roots) -> dict | None:
+    sc = _resolve(event, root, headless, roots)
     if sc is None:
         return None
     show = sc.text[:SHOW_CHARS]
@@ -308,15 +325,17 @@ def _gate(event, root: Path, policy, headless: bool, decide) -> dict | None:
     return out("ask", f"D10 gave no usable permission ({str(perm)[:40]!r})")
 
 
-def gate(event: dict, *, root: Path, policy, headless: bool, decide=None) -> dict | None:
+def gate(event: dict, *, root: Path, policy, headless: bool, decide=None,
+         scope_roots: list[Path] | None = None) -> dict | None:
     """The hook decision for one PreToolUse ``event``; ``None`` means defer.
 
-    ``decide`` defaults to ``run.run_decision`` (imported lazily). Any exception
-    is a decision too: ``ask`` (main session) or ``deny`` with ``needs human:``
-    (headless).
+    ``decide`` defaults to ``run.run_decision`` (imported lazily).
+    ``scope_roots`` (default ``[root]``) are the roots whose ``-factory`` dirs are
+    in scope. Any exception is a decision too: ``ask`` (main session) or ``deny``
+    with ``needs human:`` (headless).
     """
     try:
-        return _gate(event, Path(root), policy, headless, decide)
+        return _gate(event, Path(root), policy, headless, decide, scope_roots)
     except Exception as exc:
         return decision("ask", f"error: {_err(exc)}", headless=headless)
 
@@ -332,6 +351,56 @@ def self_root() -> Path:
     ``policy.json`` loads (ruling R40).
     """
     return Path(__file__).resolve().parents[2]
+
+
+class GateRootError(Exception):
+    """This gate copy sits in a job worktree with no main checkout beside it."""
+
+
+_SUFFIX = "-factory"
+
+
+def _main_of(r: Path) -> Path:
+    """``<x>-factory/<job>`` (a gate copy inside a job worktree) -> ``<x>``.
+
+    Only by directory names, never by parsing ``.git``. A main checkout that
+    happens to live in a ``*-factory`` folder (``.git`` is a directory there)
+    and has no such sibling stays itself.
+    """
+    name = r.parent.name
+    if not name.endswith(_SUFFIX) or len(name) == len(_SUFFIX):
+        return r
+    main = r.parent.parent / name[: -len(_SUFFIX)]
+    if (main / "factory" / "policy.json").is_file():
+        return main
+    if (r / ".git").is_dir():
+        return r
+    raise GateRootError(f"gate copy in {r} but no main checkout at {main}")
+
+
+def gate_roots(env) -> list[Path]:
+    """The roots this gate serves, primary first.
+
+    The wrapper's LOGICAL root ``FACTORY_GATE_ROOT`` (absolute, and
+    ``<it>/factory/factorylib/toolgate.py`` must be this very file, so an
+    inherited value cannot redirect the gate), then the self-located one.
+    """
+    roots: list[Path] = []
+    raw = env.get("FACTORY_GATE_ROOT") or ""
+    if raw and os.path.isabs(raw):
+        logical = Path(os.path.normpath(raw))
+        try:
+            if os.path.samefile(logical / "factory" / "factorylib" / "toolgate.py", __file__):
+                roots.append(logical)
+        except (OSError, ValueError):
+            pass
+    roots.append(self_root())
+    out: list[Path] = []
+    for r in roots:
+        m = _main_of(r)
+        if m not in out:
+            out.append(m)
+    return out
 
 
 def _on_alarm(signum, frame):
@@ -357,13 +426,15 @@ def _disarm(armed) -> None:
         pass
 
 
-def _run(raw: str, headless: bool, root: Path | None, decide) -> dict | None:
+def _run(raw: str, headless: bool, root: Path | None, decide, env) -> dict | None:
     event = json.loads(raw)
-    root = Path(root) if root is not None else self_root()
-    if not headless and _resolve(event, root, headless) is None:
+    roots = [Path(root)] if root is not None else gate_roots(env)
+    root = roots[0]
+    if not headless and _resolve(event, root, headless, roots) is None:
         return None  # out of scope: the user's own session
     policy = _mod("policy").load_policy(root)
-    return gate(event, root=root, policy=policy, headless=headless, decide=decide)
+    return gate(event, root=root, policy=policy, headless=headless, decide=decide,
+                scope_roots=roots)
 
 
 def main(stdin=None, stdout=None, env=None, root: Path | None = None, decide=None) -> int:
@@ -380,7 +451,7 @@ def main(stdin=None, stdout=None, env=None, root: Path | None = None, decide=Non
         try:
             armed = _arm(BUDGET_S)
             try:
-                out = _run((stdin or sys.stdin).read(), headless, root, decide)
+                out = _run((stdin or sys.stdin).read(), headless, root, decide, env)
             finally:
                 _disarm(armed)
         except GateTimeout:

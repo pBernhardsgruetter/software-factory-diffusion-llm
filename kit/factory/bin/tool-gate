@@ -1,19 +1,26 @@
 #!/usr/bin/env bash
 # PreToolUse hook: the factory tool gate (factorylib.toolgate).
 #
-# Never fails open (rulings R27a, R34): Claude Code treats a hook that exits
-# non-zero or prints non-JSON as non-blocking, so this wrapper ALWAYS exits 0.
-# If uv or Python fails, or the output is not a hook decision, it prints its own
+# Never fails open (rulings R27a, R34, R41): Claude Code treats a hook that
+# exits non-zero, prints non-JSON or runs past its 30 s timeout as
+# non-blocking, so this wrapper ALWAYS exits 0 within the time limit. If uv or
+# Python fails or hangs, or the output is not a hook decision, it prints its own
 # decision: deny ("needs human: ...") headless (FACTORY_HEADLESS=1), ask in the
 # main session. Empty output with rc 0 is the gate's "defer"; headless it is
 # denied, since nothing legitimately defers there.
-# ``python -I`` (isolated): neither the cwd (a job worktree) nor PYTHONPATH /
-# PYTHON* variables reach sys.path (rulings R38, R40).
-# The gate runs under ``timeout`` (25 s, below the 30 s hook timeout), so a hung
-# uv or Python is a fallback decision, not a Claude Code hook timeout (which
-# would not block). FACTORY_TOOLGATE_TIMEOUT_S may only SHORTEN it (1-24 s).
-# Without a ``timeout`` binary (e.g. stock macOS) the gate runs unbounded; its
-# own 20 s watchdog still answers.
+#
+# - ``python -I`` (isolated): neither the cwd (a job worktree) nor PYTHONPATH /
+#   PYTHON* variables reach sys.path (rulings R38, R40).
+# - Time limit 25 s (below the 30 s hook timeout): ``timeout``, else
+#   ``gtimeout``, else perl's ``alarm`` (stock macOS), plus a shell watchdog that
+#   kills the whole process group. FACTORY_TOOLGATE_TIMEOUT_S may only SHORTEN
+#   the limit (1-24 s).
+# - The gate runs in its own process group with stdout/stderr in temp files, so
+#   a lingering grandchild can never hold this hook's pipes open.
+# - FACTORY_GATE_ROOT: the LOGICAL main checkout (this wrapper's unresolved
+#   path), for a kit installed through symlinks. Python accepts it only if it
+#   contains this very gate.
+# Written for bash 3.2 (macOS) as well: no empty-array expansions under set -u.
 set -uo pipefail
 
 fallback() {
@@ -28,19 +35,52 @@ fallback() {
 }
 
 here="$(dirname "$(readlink -f "$0")")" || fallback "gate failed (cannot locate wrapper)"
+groot="$(cd "$(dirname "$0")/../.." 2>/dev/null && pwd -L)" \
+  || fallback "gate failed (cannot locate root)"
 command -v uv >/dev/null 2>&1 || fallback "gate failed (uv not found)"
 
 limit=25
 o="${FACTORY_TOOLGATE_TIMEOUT_S:-}"
 if [[ "$o" =~ ^[1-9][0-9]?$ ]] && [ "$o" -lt "$limit" ]; then limit="$o"; fi
 
-run=(uv run --quiet --project "$here/.." python -I -m factorylib.toolgate "$@")
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/tool-gate.XXXXXX")" || fallback "gate failed (mktemp)"
+trap 'rm -rf "$tmp"' EXIT
+
+run=(uv run --quiet --project "$here/.." python -I -m factorylib.toolgate ${1+"$@"})
+backstop="$limit"  # no timer binary: the watchdog is the timer
 if command -v timeout >/dev/null 2>&1; then
   run=(timeout -k 2 "$limit" "${run[@]}")
+  backstop=$((limit + 3))
+elif command -v gtimeout >/dev/null 2>&1; then
+  run=(gtimeout -k 2 "$limit" "${run[@]}")
+  backstop=$((limit + 3))
+elif command -v perl >/dev/null 2>&1; then
+  run=(perl -e 'alarm shift; exec @ARGV; exit 127' "$limit" "${run[@]}")
+  backstop=$((limit + 1))
 fi
-out="$("${run[@]}")"
+
+exec 3<&0
+set -m  # background jobs get their own process group (pgid = pid)
+FACTORY_GATE_ROOT="$groot" "${run[@]}" <&3 >"$tmp/out" 2>"$tmp/err" &
+pid=$!
+(
+  sleep "$backstop"
+  kill -s TERM -- "-$pid" 2>/dev/null
+  sleep 1
+  kill -s KILL -- "-$pid" 2>/dev/null
+) </dev/null >/dev/null 2>&1 &
+wd=$!
+disown "$wd" 2>/dev/null || true  # no "Killed" job notice when we reap it below
+set +m
+wait "$pid"
 rc=$?
+kill -s KILL -- "-$pid" 2>/dev/null  # leftovers, e.g. a TERM-ignoring grandchild
+kill -s KILL -- "-$wd" 2>/dev/null
+exec 3<&-
+cat "$tmp/err" >&2 2>/dev/null
+
 [ "$rc" -eq 0 ] || fallback "gate failed (rc=$rc)"
+out="$(cat "$tmp/out")" || fallback "gate failed (cannot read output)"
 if [ -z "$out" ]; then
   [ "${FACTORY_HEADLESS:-}" = "1" ] && fallback "gate failed (no decision)"
   exit 0  # main session: defer to Claude Code's normal permission flow

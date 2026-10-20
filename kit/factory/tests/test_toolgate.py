@@ -302,10 +302,11 @@ def test_import_error_in_run_still_emits_decision(env, monkeypatch):
 # ------------------------------------------------------------------ main()
 
 
-def run_main(stdin, *, root, cwd, headless=False, extra_env=None):
-    """Run ``root``'s installed gate copy (``root/factory/factorylib``)."""
-    e = {k: v for k, v in os.environ.items() if k not in ("FACTORY_HEADLESS",)}
-    e["PYTHONPATH"] = str(root / "factory")
+def run_main(stdin, *, root, cwd, headless=False, extra_env=None, pkg=None):
+    """Run ``root``'s installed gate copy (``root/factory/factorylib``, or ``pkg``)."""
+    e = {k: v for k, v in os.environ.items()
+         if k not in ("FACTORY_HEADLESS", "FACTORY_GATE_ROOT")}
+    e["PYTHONPATH"] = str(pkg if pkg is not None else root / "factory")
     if headless:
         e["FACTORY_HEADLESS"] = "1"
     e.update(extra_env or {})
@@ -551,7 +552,8 @@ needs_uv = pytest.mark.skipif(shutil.which("uv") is None, reason="uv not install
 
 
 def run_bin(path, stdin, *, cwd, headless, path_env=None, extra=None):
-    e = {k: v for k, v in os.environ.items() if k != "FACTORY_HEADLESS"}
+    e = {k: v for k, v in os.environ.items()
+         if k not in ("FACTORY_HEADLESS", "FACTORY_GATE_ROOT")}
     if headless:
         e["FACTORY_HEADLESS"] = "1"
     if path_env is not None:
@@ -747,10 +749,182 @@ def test_wrapper_timeout_override_only_shortens(tmp_path, override, want):
 def test_wrapper_without_timeout_binary_still_gates(tmp_path):
     d = tmp_path / "minbin"
     d.mkdir()
-    for tool in ("bash", "dirname", "readlink", "cat"):
+    for tool in GATE_TOOLS:
         (d / tool).symlink_to(shutil.which(tool))
     (d / "uv").write_text("#!/usr/bin/env bash\nexit 3\n")
     (d / "uv").chmod(0o755)
     assert gate_out(run_bin(GATE_BIN, "{}", cwd=tmp_path, headless=True,
                             path_env=str(d))) == (
         "deny", "needs human: factory tool-gate: gate failed (rc=3)")
+
+
+# ------------------------------------------------------------ fix round 3
+
+GATE_TOOLS = ("bash", "dirname", "readlink", "cat", "mktemp", "rm", "sleep")
+
+
+def min_path(tmp_path, *, perl=False, uv_script=None):
+    """A PATH with only the wrapper's basic tools (no timeout / gtimeout)."""
+    d = tmp_path / "minbin"
+    d.mkdir()
+    for tool in GATE_TOOLS + (("perl",) if perl else ()):
+        (d / tool).symlink_to(shutil.which(tool))
+    if uv_script is not None:
+        (d / "uv").write_text("#!/usr/bin/env bash\n" + uv_script + "\n")
+        (d / "uv").chmod(0o755)
+    return str(d)
+
+
+@pytest.mark.parametrize("perl", [True, False])
+def test_wrapper_without_timeout_bounds_hanging_uv(tmp_path, perl):
+    if perl and shutil.which("perl") is None:
+        pytest.skip("perl not installed")
+    path = min_path(tmp_path, perl=perl, uv_script="sleep 30; echo late")
+    for headless, want in ((True, "deny"), (False, "ask")):
+        t0 = time.monotonic()
+        r = run_bin(GATE_BIN, "{}", cwd=tmp_path, headless=headless, path_env=path,
+                    extra={"FACTORY_TOOLGATE_TIMEOUT_S": "2"})
+        assert time.monotonic() - t0 < 2 + 3, r.stderr
+        perm, reason = gate_out(r)
+        assert perm == want and "gate failed (rc=" in reason
+
+
+GRANDCHILD = ('( trap "" TERM; exec sleep 30 ) &\n'  # ignores TERM, holds stdout/stderr
+              'sleep 30\n')
+
+
+@pytest.mark.parametrize("timer", ["timeout", "perl", "none"])
+def test_wrapper_term_ignoring_grandchild_does_not_block(tmp_path, timer):
+    if timer == "timeout":
+        path = fake_uv(tmp_path, GRANDCHILD)
+    else:
+        if timer == "perl" and shutil.which("perl") is None:
+            pytest.skip("perl not installed")
+        path = min_path(tmp_path, perl=timer == "perl", uv_script=GRANDCHILD)
+    t0 = time.monotonic()
+    p = subprocess.Popen([str(GATE_BIN)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, text=True, cwd=tmp_path,
+                         env={**os.environ, "PATH": path, "FACTORY_HEADLESS": "1",
+                              "FACTORY_TOOLGATE_TIMEOUT_S": "2"})
+    out, _ = p.communicate("{}", timeout=20)  # EOF on our pipes, not just exit
+    assert time.monotonic() - t0 < 2 + 5
+    assert p.returncode == 0
+    perm, reason = hso(json.loads(out))
+    assert perm == "deny" and "gate failed" in reason
+
+
+def test_wrapper_exports_logical_root(tmp_path):
+    kit = tmp_path / "kitsrc" / "factory" / "bin"
+    kit.mkdir(parents=True)
+    shutil.copy(GATE_BIN, kit / "tool-gate")
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / "factory").symlink_to(tmp_path / "kitsrc" / "factory")
+    path = fake_uv(tmp_path, 'cat >/dev/null\nprintf \'{"hookSpecificOutput":'
+                   '{"hookEventName":"PreToolUse","permissionDecision":"allow",'
+                   '"permissionDecisionReason":"%s"}}\' "$FACTORY_GATE_ROOT"')
+    r = run_bin(app / "factory" / "bin" / "tool-gate", "{}", cwd=tmp_path, headless=False,
+                path_env=path, extra={"FACTORY_GATE_ROOT": "/inherited/bogus"})
+    assert gate_out(r) == ("allow", str(app))
+
+
+def install_kit(dst):
+    """A copy of the factory kit (code, wrappers, policy) that uv can run."""
+    dst.mkdir(parents=True)
+    for name in ("factorylib", "bin", "decisions"):
+        shutil.copytree(KIT / name, dst / name, symlinks=True,
+                        ignore=shutil.ignore_patterns("__pycache__"))
+    for name in ("pyproject.toml", "uv.lock", "policy.json", "config.json"):
+        shutil.copy(KIT / name, dst / name)
+
+
+def git_repo_with_worktree(root, wt):
+    g = ["git", "-c", "user.email=t@example.com", "-c", "user.name=t", "-C", str(root)]
+    subprocess.run([*g, "init", "-q"], check=True)
+    subprocess.run([*g, "commit", "-q", "--allow-empty", "-m", "init"], check=True)
+    subprocess.run([*g, "worktree", "add", "-q", "-b", "factory/" + wt.name, str(wt)],
+                   check=True)
+
+
+@needs_uv
+def test_symlinked_factory_install_end_to_end(tmp_path):
+    install_kit(tmp_path / "kitsrc" / "factory")
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / "factory").symlink_to(tmp_path / "kitsrc" / "factory")
+    wt = tmp_path / "app-factory" / "001-q"
+    git_repo_with_worktree(app, wt)
+    gate_bin = app / "factory" / "bin" / "tool-gate"
+    ev = bash("cd ../app-factory/001-q && git push --force", app)
+    perm, reason = gate_out(run_bin(gate_bin, json.dumps(ev), cwd=app, headless=False))
+    assert perm == "deny" and "policy deny" in reason
+    perm, reason = gate_out(run_bin(gate_bin, json.dumps(bash("git status", wt)), cwd=wt,
+                                    headless=True))
+    assert perm == "allow", reason
+
+
+def test_symlinked_repo_dir_logical_worktree_path(tmp_path):
+    root, _ = make_root(tmp_path / "real")  # real/main, real/main-factory/001-x
+    link = tmp_path / "applink"
+    link.symlink_to(root)
+    wt = tmp_path / "applink-factory" / "001-x"  # the SKILL's logical-pwd worktree
+    wt.mkdir(parents=True)
+    (wt / ".git").write_text("gitdir: /nonexistent\n")
+    ev = bash(f"cd {wt} && git push --force", link)
+    r = run_main(json.dumps(ev), root=root, cwd=link, pkg=link / "factory",
+                 extra_env={"FACTORY_GATE_ROOT": str(link)})
+    assert r.returncode == 0, r.stderr
+    assert hso(json.loads(r.stdout))[0] == "deny"
+    # the resolved factory dir is still in scope too
+    ev = bash(f"cd {tmp_path / 'real' / 'main-factory' / '001-x'} && git push", link)
+    r = run_main(json.dumps(ev), root=root, cwd=link, pkg=link / "factory",
+                 extra_env={"FACTORY_GATE_ROOT": str(link)})
+    assert hso(json.loads(r.stdout))[0] == "deny"
+
+
+def test_inherited_bogus_gate_root_is_ignored(tmp_path):
+    root, wt = make_root(tmp_path)
+    evil, ewt = make_root(tmp_path / "e")  # e/main with its own gate copy
+    pol = json.loads((KIT / "policy.json").read_text())
+    pol["tool_allow"].append({"argv": ["make"], "paths": True})
+    (evil / "factory" / "policy.json").write_text(json.dumps(pol))
+    for bogus in (evil, tmp_path / "nope", "relative/dir", ""):
+        r = run_main(json.dumps(bash("make x", wt)), root=root, cwd=wt, headless=True,
+                     extra_env={"FACTORY_GATE_ROOT": str(bogus)})
+        perm, reason = hso(json.loads(r.stdout))
+        assert perm == "deny" and "not on allowlist" in reason, bogus
+        # and evil's factory dir is not in scope for the main session
+        r = run_main(json.dumps(bash(f"cd {ewt} && make x", tmp_path)), root=root,
+                     cwd=tmp_path, extra_env={"FACTORY_GATE_ROOT": str(bogus)})
+        assert r.returncode == 0 and r.stdout == "", bogus
+
+
+def test_gate_roots_accepts_only_its_own_install(tmp_path):
+    here = Path(toolgate.__file__).resolve().parents[2]
+    assert toolgate.gate_roots({}) == [here]
+    assert toolgate.gate_roots({"FACTORY_GATE_ROOT": str(tmp_path)}) == [here]
+    link = tmp_path / "logical"
+    link.symlink_to(here)
+    assert toolgate.gate_roots({"FACTORY_GATE_ROOT": str(link)}) == [link, here]
+
+
+def test_session_inside_job_worktree_uses_sibling_main(tmp_path):
+    root, wt = make_root(tmp_path)
+    # the worktree carries its own committed kit copy; its hook runs that copy
+    shutil.copytree(KIT / "factorylib", wt / "factory" / "factorylib",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    for headless in (False, True):
+        r = run_main(json.dumps(bash("cd . && git push --force", wt)), root=root, cwd=wt,
+                     headless=headless, pkg=wt / "factory")
+        assert r.returncode == 0, r.stderr
+        perm, reason = hso(json.loads(r.stdout))
+        assert perm == "deny" and "policy deny" in reason
+    # sibling main checkout without factory/policy.json: ask / deny, never defer
+    lone = tmp_path / "x-factory" / "y"
+    shutil.copytree(KIT / "factorylib", lone / "factory" / "factorylib",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    for headless, want in ((False, "ask"), (True, "deny")):
+        r = run_main(json.dumps(bash("git status", lone)), root=root, cwd=lone,
+                     headless=headless, pkg=lone / "factory")
+        assert r.returncode == 0, r.stderr
+        assert hso(json.loads(r.stdout))[0] == want
