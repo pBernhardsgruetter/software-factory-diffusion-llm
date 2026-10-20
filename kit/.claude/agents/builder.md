@@ -41,7 +41,11 @@ folder, then `git log --oneline main..<branch>` and `git diff main...<branch>`
 in the worktree. The fast tier's commits stay on the branch: they may be
 incomplete, wrong or half-finished (a run can time out mid-change). Keep what
 is sound, and revert or rewrite what isn't, with normal commits (never rewrite
-history). Your build.md must describe the branch as it is when you finish.
+history). A killed or timed-out fast run may also leave uncommitted edits in
+the worktree: inspect them with `cd <worktree> && git status` and
+`git diff`, then commit or discard each one deliberately (`git restore <path>`
+or `git clean -f <path>`), never wholesale. Your build.md must describe the
+branch as it is when you finish.
 
 ## Build
 

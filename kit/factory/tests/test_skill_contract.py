@@ -44,6 +44,29 @@ def test_approver_reads_decide_escalation():
     text = (AGENTS / "approver.md").read_text()
     assert "Decide escalation" in text
     assert "decisions.jsonl" in text
+    assert "reviewers_active" in text and "skipped" in text
+
+
+def test_escalation_truth_is_the_independent_verdict():
+    line = "Independent verdict (ignoring Decide)"
+    assert line in (AGENTS / "approver.md").read_text()
+    assert line in _skill()
+
+
+def test_every_helper_call_isolates_stderr():
+    text = _skill()
+    calls = re.findall(r"`(factory/bin/(?:decide|fast-coder) [^`\n]*--job[^`\n]*)`", text)
+    calls += [ln for ln in text.splitlines()
+              if re.match(r"factory/bin/(?:decide|fast-coder) .*--job", ln)]
+    assert len(calls) > 20
+    bad = [c for c in calls if not c.endswith(" 2>>factory/jobs/<job-id>/stderr.log")]
+    assert bad == []
+
+
+def test_budget_baseline_and_config_resumes():
+    text = _skill()
+    assert "budget_base" in text
+    assert "max_resumes" in text
 
 
 def test_builder_knows_promotion_and_failure_decision():

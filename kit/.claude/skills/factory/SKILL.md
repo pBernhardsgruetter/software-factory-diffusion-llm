@@ -38,8 +38,9 @@ feature → triage → scout → clarify → spec-writer → assumptions
 |              | `reviewer-code`                       | `round-N/review-code.md`                    |
 | approve      | `approver`                            | `decision.md`                               |
 
-`MAX_RESUMES = 2`: after round 1 there are at most two fix rounds, whoever does
-them (builder, fast builder or fast fixer). A fix round is one pass of **On any
+`MAX_RESUMES` is `max_resumes` in `factory/config.json` (2 when it is missing):
+after round 1 there are at most that many fix rounds, whoever does them
+(builder, fast builder or fast fixer). A fix round is one pass of **On any
 CHANGES** and is counted in `fix_rounds`. Re-review rounds the approval gate adds
 are not fix rounds. To change the factory, edit this file and the agent files in
 `.claude/agents/`.
@@ -58,8 +59,12 @@ escalation. It never overrides an Opus or Sonnet verdict.
 Run it from `<repo>`:
 
 ```bash
-factory/bin/decide <name> --job <job-id> [--state-json '{"round":N}']
+factory/bin/decide <name> --job <job-id> [--state-json '{"round":N}'] 2>>factory/jobs/<job-id>/stderr.log
 ```
+
+Every `factory/bin/decide` and `factory/bin/fast-coder` call in this skill ends
+with `2>>factory/jobs/<job-id>/stderr.log`, so stdout is exactly one JSON object
+(or nothing) and warnings never mix into it. Keep that redirect on every call.
 
 It prints one JSON record. Act on its `apply` object only; `route`, `band` and
 `answers` are calibration data. Every decision ships in `shadow` mode, where
@@ -69,7 +74,7 @@ and never check the mode yourself. Write `N` as a plain number in the JSON.
 Ground truth goes in with:
 
 ```bash
-factory/bin/decide outcome --job <job-id> --decision <name> --truth '<json>'
+factory/bin/decide outcome --job <job-id> --decision <name> --truth '<json>' 2>>factory/jobs/<job-id>/stderr.log
 ```
 
 `decide report` pairs the latest outcome per job and decision, so a later outcome
@@ -86,7 +91,7 @@ in shadow.
 ### When a decide call fails
 
 A decide call failed when it exits non-zero, its stdout is not one JSON object,
-or the record's `error` is not null. That step then does what the reference
+the record's `error` is not null, or its `apply` lacks the key the step reads. That step then does what the reference
 factory does, whatever `apply` says:
 
 | decision      | reference behaviour                                    |
@@ -101,8 +106,9 @@ factory does, whatever `apply` says:
 | `failure`, `visual` (agents) | fix; ignore                             |
 
 `escalation` is the exception. If the record has `apply.escalate == true`,
-escalate, even when `error` is set. If the call exits non-zero or its stdout is
-not one JSON object, escalate with the reason `decide escalation failed`.
+escalate, even when `error` is set. If the call exits non-zero, its stdout is
+not one JSON object, or `apply` has no `escalate` key, escalate with the reason
+`decide escalation failed`.
 
 Never retry a failed call. Report it as
 `<job-id>: decide <name> failed (<error or exit code>) → reference behaviour`.
@@ -110,7 +116,7 @@ Never retry a failed call. Report it as
 ### fast-coder
 
 ```bash
-factory/bin/fast-coder <scout|fast-builder|fast-fixer> --job <job-id> [--round N] [--port P] [--message TEXT] [--resume SESSION_ID]
+factory/bin/fast-coder <scout|fast-builder|fast-fixer> --job <job-id> [--round N] [--port P] [--message TEXT] [--resume SESSION_ID] 2>>factory/jobs/<job-id>/stderr.log
 ```
 
 It runs Mercury 3 headless in the worktree. It can take up to 30 minutes, longer
@@ -127,12 +133,14 @@ each role is in its step below. Report it as
 
 ### Cost and budget
 
-After every `fast-coder` call, add its `cost_usd` (null counts as 0) to
-`cost.mercury3_usd`. After every `decide <name>` call, add the record's
-`usage.cost` (when present) to `cost.decide_usd`. Then, if
-`mercury3_usd + decide_usd` is more than `job_budget_usd` in
+After every `fast-coder` call, add its `cost_usd` to `cost.mercury3_usd`. A
+timed-out or killed run reports `cost_usd: null`: add nothing, and say
+`cost unknown` in its report line. After every `decide <name>` call, add the
+record's `usage.cost` (when present) to `cost.decide_usd`. Then compute
+`spend = mercury3_usd + decide_usd - budget_base` (`cost.budget_base` is set by
+`/factory rework`; 0 when missing). If `spend` is more than `job_budget_usd` in
 `factory/config.json`, **escalate** with source `budget` and the reason
-`Mercury spend $<sum> is over the $<budget> job budget.` Only your own calls
+`Mercury spend $<spend> is over the $<budget> job budget.` Only your own calls
 count. Opus and Sonnet cost is not observable from the session, so
 `cost.opus_sonnet` stays `"n/a"`.
 
@@ -217,6 +225,8 @@ state that never lands in a commit. Run `factory/bin/*` from `<repo>`.
 - `fix_rounds` counts fix rounds since the job started or its last rework.
 - `escalations` is a list of `{source, reason}`; `source` is one of `rule`,
   `decide`, `approver`, `tool-gate`, `stuck`, `rounds`, `budget`.
+- `cost` holds your Mercury spend; `/factory rework` adds `budget_base` (see
+  **Cost and budget**).
 - Rewrite the whole file on every change. `worktree` is always an absolute path.
 
 ### Prompts
@@ -237,8 +247,8 @@ and `reviewer-ui` gets `5102 + 10n`, appended as ` Port: <port>.`
    Claim it with `mkdir factory/jobs/<job-id>` (no `-p`). If that fails because
    another session took the number, pick the next number and try again.
    The worktree path is `$(cd .. && pwd)/$(basename "$PWD")-factory/<job-id>`,
-   run from `<repo>`. Write `job.json` with that `worktree`, `stage: "triage"`,
-   `round: 0`, all reviews `pending`, `tier: null`, `promoted_reason: null`,
+   run from `<repo>`. Write `job.json` with `id`, `feature` (verbatim),
+   `branch: "factory/<job-id>"`, that `worktree`, `stage: "triage"`, `round: 0`, all reviews `pending`, `tier: null`, `promoted_reason: null`,
    `fast_session_id: null`, `reviewers_active: []`, `review_commits: {}`,
    `fix_rounds: 0`, `escalations: []` and
    `cost: {"opus_sonnet": "n/a", "mercury3_usd": 0, "decide_usd": 0}`.
@@ -257,24 +267,25 @@ and `reviewer-ui` gets `5102 + 10n`, appended as ` Port: <port>.`
    (installing dependencies, for example). If any of it fails, stop and tell
    the user.
 3. **Triage (D1).** Run
-   `factory/bin/decide triage --job <job-id>`, adding
-   `--state-file factory/jobs/<job-id>/attachments.json` when that file exists.
+   `factory/bin/decide triage --job <job-id> --state-file factory/jobs/<job-id>/attachments.json 2>>factory/jobs/<job-id>/stderr.log`
+   when `attachments.json` exists, else `factory/bin/decide triage --job <job-id> 2>>factory/jobs/<job-id>/stderr.log`.
    Set `tier` to `apply.tier` and `reviewers_active` to `apply.reviewers`. Keep
    `apply.risks` for the approver prompt.
-4. **Scout.** Run `factory/bin/fast-coder scout --job <job-id>`. On success it
+4. **Scout.** Run `factory/bin/fast-coder scout --job <job-id> 2>>factory/jobs/<job-id>/stderr.log`. On success it
    has written `scout.md`. If it failed, continue without `scout.md`.
-5. **Clarify (D2).** Run `factory/bin/decide clarify --job <job-id>` (with the
-   same `--state-file` when it exists). If `apply.ask_human` is true, stop and
+5. **Clarify (D2).** Run
+   `factory/bin/decide clarify --job <job-id> --state-file factory/jobs/<job-id>/attachments.json 2>>factory/jobs/<job-id>/stderr.log`
+   when `attachments.json` exists, else `factory/bin/decide clarify --job <job-id> 2>>factory/jobs/<job-id>/stderr.log`. If `apply.ask_human` is true, stop and
    ask the user what is unclear about the feature, using the Open questions in
    `scout.md` when there are any. Wait for the answer, write it verbatim to
    `clarification.md`, then run
-   `factory/bin/decide outcome --job <job-id> --decision clarify --truth '{"ask_human":true}'`.
+   `factory/bin/decide outcome --job <job-id> --decision clarify --truth '{"ask_human":true}' 2>>factory/jobs/<job-id>/stderr.log`.
    Otherwise continue.
 6. **Spec.** Set `stage: "spec"`. Spawn `spec-writer` **with the name
    `spec-writer-<job-id>`** and the prompt
    `<paths> Read scout.md, clarification.md and attachments.md in the job folder when they exist. Feature: <feature, verbatim>`.
    Wait for it to finish, then check that `spec.md` exists.
-7. **Assumptions (D3).** Run `factory/bin/decide assumptions --job <job-id>`.
+7. **Assumptions (D3).** Run `factory/bin/decide assumptions --job <job-id> 2>>factory/jobs/<job-id>/stderr.log`.
    `apply.ask_human` is a list of 0-based indices into the bullets under
    `## Assumptions` in `spec.md`. If it is empty, continue. Otherwise stop and
    ask the user, in one message, to confirm or override each listed assumption
@@ -287,7 +298,7 @@ and `reviewer-ui` gets `5102 + 10n`, appended as ` Port: <port>.`
    - **heavy**: spawn `builder` **with the name `builder-<job-id>`** and the
      prompt `<paths> Build round 1. Port: <port>.`
    - **fast**: run
-     `factory/bin/fast-coder fast-builder --job <job-id> --round 1 --port <port>`.
+     `factory/bin/fast-coder fast-builder --job <job-id> --round 1 --port <port> 2>>factory/jobs/<job-id>/stderr.log`.
      On success, store its `session_id` in `fast_session_id`. If it failed,
      **promote** with the reason `fast-builder failed: <error or exit code>` and
      the task `Build round 1.`
@@ -299,7 +310,7 @@ and `reviewer-ui` gets `5102 + 10n`, appended as ` Port: <port>.`
 To promote with a reason and a task: set `tier: "promoted"` and
 `promoted_reason` to the reason. Spawn a fresh `builder` **with the name
 `builder-<job-id>`** and the prompt
-`<paths> Promoted from the fast tier: read build.md, every round folder and fast-*.json summaries. <task> Port: <port>.`
+`<paths> Promoted from the fast tier: read build.md, every round folder and fast-*.json transcripts. <task> Port: <port>.`
 Wait for it to finish, then go to **Build check**.
 
 ### Build check
@@ -321,7 +332,7 @@ Read the first line of `build.md`.
 2. Pick this round's reviewers:
    - round 1: `reviewers_active`;
    - a round the **Approval gate** started: the gate's list;
-   - any other round: run `factory/bin/decide rereview --job <job-id>` and take
+   - any other round: run `factory/bin/decide rereview --job <job-id> 2>>factory/jobs/<job-id>/stderr.log` and take
      `apply.reviewers`. If it is empty, take all four.
 3. Set each selected reviewer's review to `pending` and every other one to
    `skipped`. Run `git -C <worktree> rev-parse HEAD` and set
@@ -337,8 +348,8 @@ Read the first line of `build.md`.
    finishes without writing its file, or writes a first line that isn't a
    verdict, stop and tell the user.
 6. **Finding outcome.** If the fast fixer ran successfully on round N-1's
-   findings, run, before any other decide call,
-   `factory/bin/decide outcome --job <job-id> --decision finding --truth '{"fast_fixer":[<indices>]}'`,
+   findings, run, before the next `decide finding`,
+   `factory/bin/decide outcome --job <job-id> --decision finding --truth '{"fast_fixer":[<indices>]}' 2>>factory/jobs/<job-id>/stderr.log`,
    where `<indices>` are the round N-1 `apply.fast_fixer` indices whose problem
    no round-N review flags again.
 7. Decide:
@@ -348,7 +359,7 @@ Read the first line of `build.md`.
 ### On any CHANGES
 
 1. **Stuck.** If N ≥ 2, run
-   `factory/bin/decide stuck --job <job-id> --state-json '{"round":N}'`. If
+   `factory/bin/decide stuck --job <job-id> --state-json '{"round":N}' 2>>factory/jobs/<job-id>/stderr.log`. If
    `apply.escalate`, **escalate** with source `stuck` and the reason
    `No progress between round N-1 and round N.`
 2. **Rounds.** If `fix_rounds` is `MAX_RESUMES`, **escalate** with source
@@ -357,23 +368,23 @@ Read the first line of `build.md`.
 3. Set `stage: "build"` and add 1 to `fix_rounds`. The fix task is
    `Round N reviews are in <repo>/factory/jobs/<job-id>/round-<N>/. Address every review with VERDICT: CHANGES, commit, and update build.md for round N+1.`
 4. **fast tier.** Run
-   `factory/bin/decide promote --job <job-id> --state-json '{"round":N}'`.
+   `factory/bin/decide promote --job <job-id> --state-json '{"round":N}' 2>>factory/jobs/<job-id>/stderr.log`.
    - `apply.promote` true: **promote** with the reason `decide promote, round N`
      and the fix task.
    - false: run
-     `factory/bin/fast-coder fast-builder --job <job-id> --resume <fast_session_id> --round <N+1> --port <port> --message "<the fix task>"`.
+     `factory/bin/fast-coder fast-builder --job <job-id> --resume <fast_session_id> --round <N+1> --port <port> --message "<the fix task>" 2>>factory/jobs/<job-id>/stderr.log`.
      If it failed, **promote** with the reason
      `fast-builder failed: <error or exit code>` and the fix task. Otherwise go
      to **Build check**.
 5. **heavy or promoted tier.** Run
-   `factory/bin/decide finding --job <job-id> --state-json '{"round":N}'`.
+   `factory/bin/decide finding --job <job-id> --state-json '{"round":N}' 2>>factory/jobs/<job-id>/stderr.log`.
    Its indices number the round's findings from 0: the bullets under
    `## Findings` in each `VERDICT: CHANGES` review of `round-<N>/`, taking the
    reviews in the order security, ux, ui, code.
    - `apply.fast_fixer` empty: `SendMessage` the fix task to `builder-<job-id>`.
    - Otherwise write `round-<N>/fast-fix.md` with one line per `fast_fixer`
      index, `- [<reviewer>] <finding, verbatim>`, and run
-     `factory/bin/fast-coder fast-fixer --job <job-id> --round N`. If it failed,
+     `factory/bin/fast-coder fast-fixer --job <job-id> --round N 2>>factory/jobs/<job-id>/stderr.log`. If it failed,
      add its findings to the `builder` list. If `build.md` now starts with
      `STATUS: BLOCKED`, go to **Build check**. Then, **only if** the `builder`
      list is not empty, `SendMessage` to `builder-<job-id>`:
@@ -386,14 +397,14 @@ Read the first line of `build.md`.
 
 ### Approval gate
 
-1. **Re-review.** Run `factory/bin/decide rereview --job <job-id>`. The
+1. **Re-review.** Run `factory/bin/decide rereview --job <job-id> 2>>factory/jobs/<job-id>/stderr.log`. The
    reviewers still owed a round are `apply.reviewers`, plus any reviewer whose
    newest review file says `VERDICT: CHANGES`, minus every reviewer whose
    `review_commits` sha is the current `HEAD` and whose newest verdict is PASS.
    If any are owed, start **Review round N+1** with exactly those reviewers. No
    build runs and `fix_rounds` does not change.
 2. **Escalation (D9).** Set `stage: "approve"`. Run
-   `factory/bin/decide escalation --job <job-id>`. If `apply.escalate`, append
+   `factory/bin/decide escalation --job <job-id> 2>>factory/jobs/<job-id>/stderr.log`. If `apply.escalate`, append
    each entry of `apply.reasons` to `escalations`: source `decide` when it is one
    of `auth`, `payments`, `dependencies`, `ci_deploy`, `schema_migration`,
    `email`, `prod_data`, `build_scripts`, and `rule` for anything else. Do not
@@ -404,11 +415,15 @@ Read the first line of `build.md`.
    `<paths> Final round: N. Decide escalation: <apply, compact JSON>. Triage risks: <triage apply.risks, JSON>.`
    (If you no longer have the triage risks, take `apply.risks` from the latest
    triage record in `decisions.jsonl`.)
-   When it finishes, read the first line of `decision.md` and the categories
-   under its `## Risks` heading (`none` means `[]`), then record
-   `factory/bin/decide outcome --job <job-id> --decision escalation --truth '{"escalate":<true when ESCALATE, else false>}'`
+   When it finishes, read the first line of `decision.md`, its
+   `Independent verdict (ignoring Decide): APPROVE|ESCALATE` line under
+   `## Why`, and the categories under `## Risks` (`none` means `[]`). The
+   independent verdict is the approver's own call before Decide's forced
+   escalation, so it is the escalation truth (if the line is missing, use the
+   first line). Record
+   `factory/bin/decide outcome --job <job-id> --decision escalation --truth '{"escalate":<true when the independent verdict is ESCALATE, else false>}' 2>>factory/jobs/<job-id>/stderr.log`
    and
-   `factory/bin/decide outcome --job <job-id> --decision triage --truth '{"risks":[<the ## Risks categories>]}'`.
+   `factory/bin/decide outcome --job <job-id> --decision triage --truth '{"risks":[<the ## Risks categories>]}' 2>>factory/jobs/<job-id>/stderr.log`.
 4. **Decision.**
    - `ESCALATE`: **escalate** with source `approver` and the first sentence
      under `## Why`.
@@ -433,7 +448,7 @@ git branch -d factory/<job-id>
 ```
 
 Set `stage: "merged"`. If `decide stuck` ever ran for this job, record
-`factory/bin/decide outcome --job <job-id> --decision stuck --truth '{"escalate":<true when escalations has a rounds entry, else false>}'`.
+`factory/bin/decide outcome --job <job-id> --decision stuck --truth '{"escalate":<true when escalations has a rounds entry, else false>}' 2>>factory/jobs/<job-id>/stderr.log`.
 If the merge fails, run `git merge --abort` (when a merge is in progress), set
 `stage: "needs-human"` and tell the user why. If removing the worktree fails, the
 job is still merged: tell the user what `git worktree remove` printed. Never push.
@@ -458,28 +473,30 @@ on its backlog line with the job id.
 ## /factory approve <job-id>
 
 The job must be in `needs-human`. If `decide escalation` ever ran for this job,
-record the human's verdict:
-`factory/bin/decide outcome --job <job-id> --decision escalation --truth '{"escalate":<true when escalations has an approver entry, else false>}'`.
-Then run **Merge** with that job id.
+record the human's verdict, which overrides the approver's:
+`factory/bin/decide outcome --job <job-id> --decision escalation --truth '{"escalate":false}' 2>>factory/jobs/<job-id>/stderr.log`.
+Then run **Merge** with that job id. This holds for every escalation source,
+`budget` included.
 
 ## /factory rework <job-id> <note>
 
 The job must be in `needs-human`.
 
 1. Record outcomes. If `decide escalation` ever ran for this job:
-   `factory/bin/decide outcome --job <job-id> --decision escalation --truth '{"escalate":true}'`.
+   `factory/bin/decide outcome --job <job-id> --decision escalation --truth '{"escalate":true}' 2>>factory/jobs/<job-id>/stderr.log`.
    If `decide stuck` ever ran:
-   `factory/bin/decide outcome --job <job-id> --decision stuck --truth '{"escalate":<true when escalations has a rounds or stuck entry, else false>}'`.
+   `factory/bin/decide outcome --job <job-id> --decision stuck --truth '{"escalate":<true when escalations has a rounds or stuck entry, else false>}' 2>>factory/jobs/<job-id>/stderr.log`.
 2. Write the note, verbatim, to `factory/jobs/<job-id>/rework-<k>.md`, where `k`
    is the next unused number.
-3. Set `stage: "build"`, `escalations: []` and `fix_rounds: 0`. A rework run gets
-   a fresh `MAX_RESUMES`. If `tier` is `fast`, set it to `promoted` with
+3. Set `stage: "build"`, `escalations: []`, `fix_rounds: 0` and
+   `cost.budget_base` to the current `mercury3_usd + decide_usd`. A rework run
+   gets a fresh `MAX_RESUMES` and a fresh budget. If `tier` is `fast`, set it to `promoted` with
    `promoted_reason: "rework"`.
 4. Spawn a fresh `builder` named `builder-<job-id>` with the prompt
    `<paths> Rework: read rework-<k>.md and address it, then update build.md for round N+1. Port: <port>.`
    (`N` is the job's last round.) When `tier` is `promoted`, start the prompt's
    task with
-   `Promoted from the fast tier: read build.md, every round folder and fast-*.json summaries.`
+   `Promoted from the fast tier: read build.md, every round folder and fast-*.json transcripts.`
 5. Continue from **Build check**, exactly like a new job.
 
 ## Reporting
