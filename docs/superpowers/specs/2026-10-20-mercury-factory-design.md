@@ -116,7 +116,7 @@ Deterministic rules always run before Decide, are cheaper, and can never be over
   - The child session id is stored in `job.json` so later rounds resume with `--resume <id>` (the fast‑tier equivalent of `SendMessage` to `builder-<id>`).
 - **Transcript and output:** the transcript goes to `jobs/<id>/fast-<role>-round-N.json`. Each role writes the same handoff file as its Opus counterpart: scout writes `scout.md`, fast-builder writes `build.md` with the same `STATUS:` contract, and fast-fixer appends to the Log in `build.md`.
 - **Headless gating:** the D10 tool gate also runs in the child. There is no human attached, so `ask` becomes `deny`, and the role writes `STATUS: BLOCKED` with the reason. The orchestrator then surfaces that in the session.
-- **Swappable harness:** if the Phase‑0 spike fails, only this script changes (to opencode with an OpenAI‑compatible provider). The handoff files stay the same.
+- **Swappable harness:** if the Phase‑0 spike fails, only this script changes (to the pi coding agent, `pi -p --provider openrouter --model inception/mercury-3`). The handoff files stay the same.
 
 ### 4. Tool gate hook (`factory/bin/tool-gate`, a Python hook)
 - Registered as a `PreToolUse` hook for `Bash|Edit|Write` in the factory's `.claude/settings.json`, so it applies to the session and to all subagents.
@@ -165,12 +165,12 @@ docs/superpowers/specs/2026-10-20-mercury-factory-design.md   # this design, com
 README.md                 # setup: OPENROUTER_API_KEY, uv, agent-browser, copy-into-repo steps
 ```
 - **Reuse:** copy all seven agents, SKILL.md, dashboard.html and backlog.md from the reference factory, then edit them.
-- **Patterns from the reference:** the Jev demo's typed‑question client shape (`src/jev-system-one-model-python-demo/demo.py`) and the OpenAI‑compatible provider config (`src/hetzner-experiments-demo/opencode.json`, as the fallback harness).
+- **Patterns from the reference:** the Jev demo's typed‑question client shape (`src/jev-system-one-model-python-demo/demo.py`) and the pi invocation pattern in `src/pi-agent-fleet/AGENTS.md` (`--session`, `--tools`, `--no-skills`, `-p`), for the fallback harness.
 
 ## Phases
 0. **Spikes (throwaway, go/no‑go):**
    - S1: confirm the systemone endpoint path and schema on OpenRouter, measure latency, test an image part, observe `:free` 429 behaviour.
-   - S2: run `claude -p --model inception/mercury-3` through OpenRouter on a sample‑app task that needs Read/Edit/Bash/commit, over 5 runs. Go if at least 4/5 runs finish with correct tool use; otherwise switch to opencode.
+   - S2: run `claude -p --model inception/mercury-3` through OpenRouter on a sample‑app task that needs Read/Edit/Bash/commit, over 5 runs. Go if at least 4/5 runs finish with correct tool use; otherwise switch to the pi agent.
 1. **Foundation:** commit the spec doc, the kit copy, sample-app with AGENTS.md, `decide` + tests, and config/policy files.
 2. **Fast coder:** `fast-coder`, the three fast-agent prompts, and tier routing (D1) in SKILL.md.
 3. **Decision points:** D2–D8 and D11 in **shadow** mode, plus outcome logging.

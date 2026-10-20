@@ -139,7 +139,7 @@ git commit -m "spike: probe Mercury Decide API (S1)"
   - whether `--settings` hooks fire in the child;
   - whether `--session-id` + `--resume` works;
   - where `total_cost_usd` appears in the `--output-format json` output;
-  - verdict: `claude-p` or `opencode`.
+  - verdict: `claude-p` or `pi`.
 
 - [ ] **Step 1:** Write `spikes/s2_mercury_claude.sh`:
   - `git init` a temp repo in `spikes/s2-repo/` with `add.js` (an `add(a,b)` that returns `a-b`) and `add.test.js` (a `node --test` test).
@@ -148,7 +148,7 @@ git commit -m "spike: probe Mercury Decide API (S1)"
   - The command is `timeout 600 claude -p --model inception/mercury-3 --session-id <uuid> --permission-mode dontAsk --allowedTools "Read,Grep,Glob,Edit,Write,Bash" --disallowedTools "Agent,WebFetch,WebSearch" --setting-sources local --settings '<json with a PreToolUse hook that appends stdin to hook.log>' --output-format json "Fix the bug in add.js, run node --test, commit with message 'fix add'."`
 - [ ] **Step 2:** Run it 5 times on fresh repos. Count a run as a pass when `node --test` passes **and** `git log` shows the commit **and** `hook.log` is non-empty.
 - [ ] **Step 3:** On the last passing run, resume it with `claude -p --resume <uuid> … "Now also add a test for negative numbers and commit."` and confirm it keeps context.
-- [ ] **Step 4:** Record the results. Verdict `claude-p` requires at least 4/5 passes. Otherwise repeat Steps 1–2 with `opencode run` using an OpenAI-compatible provider block modelled on `zazencodes-season-3/src/hetzner-experiments-demo/opencode.json` (baseURL `https://openrouter.ai/api/v1`), and record that flag set instead.
+- [ ] **Step 4:** Record the results. Verdict `claude-p` requires at least 4/5 passes. Otherwise repeat Steps 1–2 with the pi coding agent (installed: `pi` 0.84.4): `pi -p --provider openrouter --model inception/mercury-3 --session-id <id> --tools read,bash,edit,write --no-skills --no-extensions --no-context-files --mode json "<task>"`, modelled on `zazencodes-season-3/src/pi-agent-fleet/AGENTS.md`. Also record whether a pi extension (`-e <file>`) can intercept and block tool calls, because the tool gate needs an equivalent of PreToolUse. Record that flag set instead.
 - [ ] **Step 5:** Commit.
 
 ```bash
@@ -495,7 +495,7 @@ git commit -m "spike: Mercury 3 in headless claude -p (S2)"
   - The child runs under `timeout cfg.fast_coder.timeout_s` (default 1800).
 - **First message:** `Job folder: <root>/factory/jobs/<id>/. Worktree: <wt>. Branch: <branch>.` followed by the role default (`Scout for this feature: <feature>`, `Build round <N>. Port: <P>.` or `Fix the findings listed in <job>/round-<N>/fast-fix.md.`) or `--message`.
 - **Transcript** is written to `jobs/<id>/fast-<role>-round-<N>.json`.
-- If the harness in config is `opencode`, build the opencode command from S2 instead. The output contract stays the same.
+- If the harness in config is `pi`, build the pi command from S2 instead, loading the tool-gate pi extension S2 recorded. The output contract stays the same.
 - **Prompts:**
   - `scout.md` writes `scout.md`: relevant files with a one-line reason each, existing patterns to reuse, the test command, and open questions. It never edits.
   - `fast-builder.md` is `REF/.claude/agents/builder.md` trimmed. It keeps "Where you work", "Build", "Commit" and the `build.md` contract. It adds: "If a tool call is denied with reason starting `needs human:`, stop and write `STATUS: BLOCKED` quoting it", and "When a command fails and the cause is unclear, run `factory/bin/decide failure --job <id> --state-json '{"command":…,"output_tail":…}'` and follow `apply.action`."
@@ -673,6 +673,6 @@ Agent edits:
 ---
 
 ## Execution notes
-- Tasks 1–2 gate everything else. If S2 fails, Task 12 uses the opencode branch; nothing else changes.
+- Tasks 1–2 gate everything else. If S2 fails, Task 12 uses the pi branch; nothing else changes.
 - Tasks 5–11 and 13 are pure Python with offline tests. Tasks 4, 12, 15 and 16 can be done in parallel once Task 3 is in place. Task 14 needs Tasks 10 and 12.
 - Every factory decision ships in `shadow` mode. Switching a decision to `active` is a later, per-decision config change, made once `decide report` marks it ready. Task 17's active sandbox is a test setup only.
