@@ -1,0 +1,9 @@
+:root { font-family: system-ui, sans-serif; line-height: 1.5; }
+body { margin: 0; }
+#app { max-width: 40rem; margin: 0 auto; padding: 0 1rem; }
+.site-header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 0; border-bottom: 1px solid #ccc; }
+.site-header nav a { margin-left: 1rem; }
+.site-header a[aria-current='page'] { font-weight: 700; }
+.brand { font-weight: 700; text-decoration: none; color: inherit; }
+main { min-height: 50vh; }
+.site-footer { padding: 1rem 0; border-top: 1px solid #ccc; color: #555; }
