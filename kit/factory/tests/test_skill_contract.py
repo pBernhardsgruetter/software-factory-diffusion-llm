@@ -127,3 +127,18 @@ def test_m4_review_commit_and_gate_description():
     assert "a PreToolUse hook on the Mercury 3 roles)" not in text
     for phrase in ("main session", "subagents", "Mercury 3 roles"):
         assert phrase in text[text.index("The tool gate"):][:600], phrase
+
+
+def test_m5_spec_lists_are_flat_dash_bullets():
+    text = (AGENTS / "spec-writer.md").read_text()
+    for section, item in (("## Acceptance criteria", "criterion"), ("## Assumptions", "assumption")):
+        body = text[text.index(section):].split("\n## ", 1)[0]
+        assert f"one {item} per bullet, no nested bullets" in body, section
+        assert "Numbered list" not in body
+    # the template parses as the factory expects
+    from factorylib.state import parse_assumptions
+    spec = ("## Assumptions\n- Use the existing date helper: it is already imported.\n"
+            "- Keep the English copy: no i18n in the repo.\n")
+    assert parse_assumptions(spec) == ["Use the existing date helper: it is already imported.",
+                                       "Keep the English copy: no i18n in the repo."]
+    assert parse_assumptions("## Assumptions\n- None.\n") == []

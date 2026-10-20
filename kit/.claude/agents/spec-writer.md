@@ -43,7 +43,11 @@ how they work today. Cite paths.
 Numbered list of what must be true when the work is done.
 
 ## Acceptance criteria
-Numbered list. Each criterion is one observable behaviour plus how to verify it:
+- <one criterion per `- ` bullet>
+
+A `- ` bullet list, one criterion per bullet, no nested bullets and no numbers
+(the factory counts the bullets). Each criterion is one observable behaviour
+plus how to verify it:
 a command to run, a page and what it should show, or a file that should contain
 something. The builder tests against this list and the approver checks it, so
 every item must be checkable by someone who only has the repo. For each visual
@@ -54,8 +58,13 @@ criterion, name the attachment it is checked against and the width, e.g.
 What a reasonable builder might be tempted to do but must not.
 
 ## Assumptions
+- <one assumption per `- ` bullet, with a one-line reason>
+
 Decisions you made where the request was ambiguous, each with a one-line reason.
-The approver escalates to a human when one of these is a product decision.
+A `- ` bullet list, one assumption per bullet, no nested bullets; write
+`- None.` when there are none. The orchestrator asks the user about them by
+bullet position. The approver escalates to a human when one of these is a
+product decision.
 ```
 
 ## Rules
