@@ -7,7 +7,13 @@
 # decision: deny ("needs human: ...") headless (FACTORY_HEADLESS=1), ask in the
 # main session. Empty output with rc 0 is the gate's "defer"; headless it is
 # denied, since nothing legitimately defers there.
-# ``python -P``: never put the cwd (a job worktree) on sys.path (ruling R38).
+# ``python -I`` (isolated): neither the cwd (a job worktree) nor PYTHONPATH /
+# PYTHON* variables reach sys.path (rulings R38, R40).
+# The gate runs under ``timeout`` (25 s, below the 30 s hook timeout), so a hung
+# uv or Python is a fallback decision, not a Claude Code hook timeout (which
+# would not block). FACTORY_TOOLGATE_TIMEOUT_S may only SHORTEN it (1-24 s).
+# Without a ``timeout`` binary (e.g. stock macOS) the gate runs unbounded; its
+# own 20 s watchdog still answers.
 set -uo pipefail
 
 fallback() {
@@ -24,7 +30,15 @@ fallback() {
 here="$(dirname "$(readlink -f "$0")")" || fallback "gate failed (cannot locate wrapper)"
 command -v uv >/dev/null 2>&1 || fallback "gate failed (uv not found)"
 
-out="$(uv run --quiet --project "$here/.." python -P -m factorylib.toolgate "$@")"
+limit=25
+o="${FACTORY_TOOLGATE_TIMEOUT_S:-}"
+if [[ "$o" =~ ^[1-9][0-9]?$ ]] && [ "$o" -lt "$limit" ]; then limit="$o"; fi
+
+run=(uv run --quiet --project "$here/.." python -I -m factorylib.toolgate "$@")
+if command -v timeout >/dev/null 2>&1; then
+  run=(timeout -k 2 "$limit" "${run[@]}")
+fi
+out="$("${run[@]}")"
 rc=$?
 [ "$rc" -eq 0 ] || fallback "gate failed (rc=$rc)"
 if [ -z "$out" ]; then

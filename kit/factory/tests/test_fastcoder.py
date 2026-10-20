@@ -185,7 +185,7 @@ def test_settings_hook_points_to_main_root_toolgate(env, capsys):
     (call,) = calls(env)
     settings = json.loads(flag(call["argv"], "--settings"))
     (entry,) = settings["hooks"]["PreToolUse"]
-    assert entry["matcher"] == "Bash|Edit|Write"
+    assert entry["matcher"] == "Bash|Edit|Write|MultiEdit|NotebookEdit"
     (hook,) = entry["hooks"]
     gate = env["root"] / "factory" / "bin" / "tool-gate"
     assert hook == {"type": "command", "command": shlex.quote(str(gate)), "timeout": 30}

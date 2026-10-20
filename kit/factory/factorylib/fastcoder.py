@@ -89,7 +89,7 @@ def hook_settings(root: Path) -> str:
     """Inline ``--settings`` JSON: the main checkout's tool gate as PreToolUse hook."""
     command = shlex.quote(str(tool_gate_path(root)))
     return json.dumps({"hooks": {"PreToolUse": [{
-        "matcher": "Bash|Edit|Write",
+        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit",
         "hooks": [{"type": "command", "command": command, "timeout": HOOK_TIMEOUT_S}],
     }]}})
 

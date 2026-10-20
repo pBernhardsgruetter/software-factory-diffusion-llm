@@ -12,6 +12,9 @@ by ``&&`` or ``;`` (also inside a leading ``(`` subshell), any ``git -C <path>``
 or an edit tool's ``file_path`` / ``notebook_path``. Everything else (the user's
 own sessions) is out of scope and defers.
 
+Root: the main checkout the gate is installed in, located from this file
+(``<root>/factory/factorylib/toolgate.py``), never from the event (R40).
+
 A worktree is the first directory below the factory dir that holds a ``.git``
 entry; anything else under the factory dir has no worktree (ask / deny).
 Headless, the worktree is the cwd's; a ``cd`` anywhere else, or a cwd outside
@@ -21,7 +24,7 @@ Never fail open (controller ruling R27a): Claude Code treats a hook that exits
 non-zero or prints garbage as non-blocking, so ``main`` ALWAYS exits 0 and, for
 any in-scope or unparseable event, ALWAYS prints a PreToolUse decision. Errors
 answer ``ask`` in the main session and ``deny`` (reason ``needs human: ...``)
-headless. Only stdlib is imported at module level; ``policy``, ``paths`` and
+headless. Only stdlib is imported at module level; ``policy`` and
 ``run`` are imported lazily, so a broken sibling module still yields a decision.
 Headless, an ``unknown`` command is denied without calling Decide (R31): the
 child has no API key.
@@ -41,6 +44,7 @@ GATED_TOOLS = ("Bash", "Edit", "Write", "MultiEdit", "NotebookEdit")
 TAG = "factory tool-gate: "
 NEEDS_HUMAN = "needs human: "
 SHOW_CHARS = 200  # command / path text quoted in a reason
+_SCOPE_MAX = 4096  # longest command scanned for ``git -C`` scope
 # Wall-clock budget for one hook run. The hook is registered with a 30 s
 # timeout; a cold ``uv run`` start takes a few seconds and Decide at most 2 x 5 s.
 BUDGET_S = 20.0
@@ -53,6 +57,8 @@ _CD = re.compile(
     r"""[ \t]*(\([ \t]*)?cd(?:[ \t]+(?:-P|-L|--))*[ \t]+""" + _PATH + r"""[ \t]*(&&|;)[ \t]*"""
 )
 # ``git ... -C <path>`` anywhere in the command (scope only; groups 1-3 path).
+# Its lazy scan is quadratic in the worst case, so it only runs on commands up
+# to _SCOPE_MAX chars; longer ones are out of scope in the main session (defer).
 _GIT_C = re.compile(
     r"""(?:^|[\s;&|(`])git[ \t]+(?:[^;&|\n`()]*?[ \t])?-C[ \t]*"""
     r"""(?:"([^"]*)"|'([^']*)'|([^\s;&|<>()`'"]+))"""
@@ -217,15 +223,16 @@ def _resolve(event, root: Path, headless: bool) -> _Scope | None:
             inside, wt = _locate(target, cwd, fdirs)
             if inside:
                 return _Scope(tool, cwd, wt, cmd, rest(wt))
-        for gm in _GIT_C.finditer(cmd):
-            inside, wt = _locate(_first(gm.groups()), cwd, fdirs)
-            if inside:
-                return _Scope(tool, cwd, wt, cmd, cmd)
+        if len(cmd) <= _SCOPE_MAX:
+            for gm in _GIT_C.finditer(cmd):
+                inside, wt = _locate(_first(gm.groups()), cwd, fdirs)
+                if inside:
+                    return _Scope(tool, cwd, wt, cmd, cmd)
         return None
 
-    fp = tin.get("file_path")
-    if not isinstance(fp, str) and tool == "NotebookEdit":
-        fp = tin.get("notebook_path")
+    fp = tin.get("notebook_path") if tool == "NotebookEdit" else None
+    if not isinstance(fp, str) or not fp:
+        fp = tin.get("file_path")
     if not isinstance(fp, str) or not fp:
         raise ValueError(f"{tool} file_path / notebook_path missing or not a string")
     if "\0" in fp:
@@ -317,19 +324,14 @@ def gate(event: dict, *, root: Path, policy, headless: bool, decide=None) -> dic
 # --------------------------------------------------------------------- main
 
 
-def _find_root(event) -> Path:
-    cwd = event.get("cwd") if isinstance(event, dict) else None
-    try:
-        paths = _mod("paths")
-        if isinstance(cwd, str) and os.path.isabs(cwd) and os.path.isdir(cwd):
-            try:
-                return paths.find_root(Path(cwd))
-            except Exception:
-                pass
-        return paths.find_root()
-    except Exception:
-        # <root>/factory/factorylib/toolgate.py -> <root>
-        return Path(__file__).resolve().parents[2]
+def self_root() -> Path:
+    """The main checkout this gate is installed in.
+
+    ``<root>/factory/factorylib/toolgate.py`` -> ``<root>``. Never derived from
+    the event's cwd: a worktree's ``.git`` file must not be able to choose which
+    ``policy.json`` loads (ruling R40).
+    """
+    return Path(__file__).resolve().parents[2]
 
 
 def _on_alarm(signum, frame):
@@ -357,7 +359,7 @@ def _disarm(armed) -> None:
 
 def _run(raw: str, headless: bool, root: Path | None, decide) -> dict | None:
     event = json.loads(raw)
-    root = Path(root) if root is not None else _find_root(event)
+    root = Path(root) if root is not None else self_root()
     if not headless and _resolve(event, root, headless) is None:
         return None  # out of scope: the user's own session
     policy = _mod("policy").load_policy(root)

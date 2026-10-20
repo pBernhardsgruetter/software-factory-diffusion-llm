@@ -23,6 +23,9 @@ DECISIONS = {"allow", "deny", "ask"}
 def make_root(tmp_path, *, mode="shadow", git=False):
     root = tmp_path / "main"
     (root / "factory" / "jobs" / "001-x").mkdir(parents=True)
+    # the gate locates its root from its own file: install a copy under this root
+    shutil.copytree(KIT / "factorylib", root / "factory" / "factorylib",
+                    ignore=shutil.ignore_patterns("__pycache__"))
     shutil.copy(KIT / "policy.json", root / "factory" / "policy.json")
     cfg = json.loads((KIT / "config.json").read_text())
     cfg["decisions"]["toolgate"] = {"mode": mode}
@@ -299,9 +302,10 @@ def test_import_error_in_run_still_emits_decision(env, monkeypatch):
 # ------------------------------------------------------------------ main()
 
 
-def run_main(stdin, *, cwd, headless=False, extra_env=None):
+def run_main(stdin, *, root, cwd, headless=False, extra_env=None):
+    """Run ``root``'s installed gate copy (``root/factory/factorylib``)."""
     e = {k: v for k, v in os.environ.items() if k not in ("FACTORY_HEADLESS",)}
-    e["PYTHONPATH"] = str(KIT)
+    e["PYTHONPATH"] = str(root / "factory")
     if headless:
         e["FACTORY_HEADLESS"] = "1"
     e.update(extra_env or {})
@@ -311,19 +315,19 @@ def run_main(stdin, *, cwd, headless=False, extra_env=None):
 
 def test_main_reads_stdin_prints_json(tmp_path):
     root, wt = make_root(tmp_path, git=True)
-    r = run_main(json.dumps(bash(f"cd {wt} && git push", root)), cwd=root)
+    r = run_main(json.dumps(bash(f"cd {wt} && git push", root)), cwd=root, root=root)
     assert r.returncode == 0, r.stderr
     perm, reason = hso(json.loads(r.stdout))
     assert perm == "deny" and reason.startswith("factory tool-gate: ")
     # out of scope: nothing printed, exit 0 (defer)
-    r = run_main(json.dumps(bash("git push", root)), cwd=root)
+    r = run_main(json.dumps(bash("git push", root)), cwd=root, root=root)
     assert r.returncode == 0 and r.stdout == ""
 
 
 def test_garbage_stdin_emits_decision_when_headless(tmp_path):
     root, _ = make_root(tmp_path, git=True)
     for stdin in ("not json{", "", "[1, 2]", "null", '{"tool_name": 5}'):
-        r = run_main(stdin, cwd=root, headless=True)
+        r = run_main(stdin, cwd=root, headless=True, root=root)
         assert r.returncode == 0, r.stderr
         perm, reason = hso(json.loads(r.stdout))
         assert perm == "deny" and reason.startswith("needs human: ")
@@ -348,7 +352,7 @@ def test_main_always_exit_0(tmp_path):
         (json.dumps(bash(f"cd {wt} && git status", wt)), wt, True, "allow"),
     ]
     for stdin, cwd, headless, want in cases:
-        r = run_main(stdin, cwd=cwd, headless=headless)
+        r = run_main(stdin, cwd=cwd, headless=headless, root=root)
         assert r.returncode == 0, (stdin, r.stderr)
         if want is None:
             assert r.stdout == "", (stdin, r.stdout)
@@ -357,7 +361,7 @@ def test_main_always_exit_0(tmp_path):
     # missing policy file, in scope: still a decision
     (root / "factory" / "policy.json").unlink()
     for headless, want in ((False, "ask"), (True, "deny")):
-        r = run_main(in_scope, cwd=root, headless=headless)
+        r = run_main(in_scope, cwd=root, headless=headless, root=root)
         assert r.returncode == 0, r.stderr
         assert hso(json.loads(r.stdout))[0] == want
 
@@ -383,7 +387,8 @@ def test_output_shape_matches_pi_extension(tmp_path):
     events = [bash("git status", wt), bash("git push", wt), bash("make x", wt),
               edit(wt / ".claude" / "x.json", wt), "garbage"]
     for ev in events:
-        r = run_main(ev if isinstance(ev, str) else json.dumps(ev), cwd=wt, headless=True)
+        r = run_main(ev if isinstance(ev, str) else json.dumps(ev),
+                     cwd=wt, headless=True, root=root)
         assert r.returncode == 0
         out = json.loads(r.stdout)
         assert list(out) == ["hookSpecificOutput"]
@@ -402,6 +407,9 @@ def test_settings_json_registers_hook():
     s = json.loads((REPO_KIT / ".claude" / "settings.json").read_text())
     (entry,) = s["hooks"]["PreToolUse"]
     assert entry["matcher"] == "Bash|Edit|Write|MultiEdit|NotebookEdit"
+    from factorylib import fastcoder  # the headless children register the same matcher
+    (fc,) = json.loads(fastcoder.hook_settings(Path("/r")))["hooks"]["PreToolUse"]
+    assert fc["matcher"] == entry["matcher"]
     (hook,) = entry["hooks"]
     assert hook == {"type": "command",
                     "command": '"$CLAUDE_PROJECT_DIR"/factory/bin/tool-gate', "timeout": 30}
@@ -554,20 +562,28 @@ def run_bin(path, stdin, *, cwd, headless, path_env=None, extra=None):
 
 
 @needs_uv
-def test_wrapper_ignores_cwd_shadow_modules(tmp_path):
+@pytest.mark.parametrize("pythonpath", [None, ":", ".", ":/usr/lib"])
+def test_wrapper_ignores_cwd_shadow_modules(tmp_path, pythonpath):
     root, wt = make_root(tmp_path, git=True)
     (wt / "json.py").write_text(HIJACK)
-    r = run_bin(GATE_BIN, json.dumps(bash("git push --force", wt)), cwd=wt, headless=True)
-    assert r.returncode == 0, r.stderr
-    perm, reason = hso(json.loads(r.stdout))
-    assert perm == "deny" and "hijacked" not in reason
-    assert not (wt / "HIJACKED").exists()
+    extra = {} if pythonpath is None else {"PYTHONPATH": pythonpath}
+    for headless, cwd in ((True, wt), (False, wt), (False, root)):
+        if cwd == root:
+            (root / "json.py").write_text(HIJACK)
+        r = run_bin(GATE_BIN, json.dumps(bash(f"cd {wt} && git push --force", cwd)), cwd=cwd,
+                    headless=headless, extra=extra)
+        assert r.returncode == 0, r.stderr
+        assert "hijacked" not in r.stdout, (headless, cwd)
+        assert not (cwd / "HIJACKED").exists(), (headless, cwd)
+        if headless:
+            assert hso(json.loads(r.stdout))[0] == "deny"
     # decide and fast-coder: the cwd's json.py is never imported either
     for name in ("decide", "fast-coder"):
+        e = {**os.environ, **extra}
         r = subprocess.run([str(KIT / "bin" / name), "--help"], capture_output=True,
-                           text=True, cwd=wt, timeout=120)
+                           text=True, cwd=wt, timeout=120, env=e)
         assert not (wt / "HIJACKED").exists(), name
-        assert "hijacked" not in r.stdout, name
+        assert "hijacked" not in r.stdout and r.returncode == 0, (name, r.stderr)
 
 
 def fake_uv(tmp_path, script):
@@ -632,3 +648,109 @@ def test_wrapper_passes_decision_through_and_stdin(tmp_path):
     path = fake_uv(tmp_path, "cat")
     r = run_bin(GATE_BIN, good, cwd=tmp_path, headless=True, path_env=path)
     assert r.returncode == 0 and r.stdout.strip() == good
+
+
+# ------------------------------------------------------------ fix round 2
+
+
+def test_root_is_self_located_not_from_worktree_git(tmp_path):
+    """A worktree's ``.git`` must not choose which policy.json loads (R40)."""
+    root, _ = make_root(tmp_path, git=True)
+    # attacker repo "evil/main", permissive policy, whose factory dir aliases ours
+    evil = tmp_path / "evil" / "main"
+    (evil / "factory").mkdir(parents=True)
+    pol = json.loads((KIT / "policy.json").read_text())
+    pol["tool_allow"].append({"argv": ["make"], "paths": True})
+    (evil / "factory" / "policy.json").write_text(json.dumps(pol))
+    g = ["git", "-c", "user.email=t@example.com", "-c", "user.name=t", "-C", str(evil)]
+    subprocess.run([*g, "init", "-q"], check=True)
+    subprocess.run([*g, "commit", "-q", "--allow-empty", "-m", "init"], check=True)
+    wt2 = tmp_path / "main-factory" / "002-y"
+    subprocess.run([*g, "worktree", "add", "-q", "-b", "y", str(wt2)], check=True)
+    (tmp_path / "evil" / "main-factory").symlink_to(tmp_path / "main-factory")
+    r = run_main(json.dumps(bash("make x", wt2)), root=root, cwd=wt2, headless=True)
+    assert r.returncode == 0, r.stderr
+    perm, reason = hso(json.loads(r.stdout))
+    assert perm == "deny" and "command not on allowlist" in reason
+
+
+def test_main_uses_own_location_for_root(tmp_path):
+    root, wt = make_root(tmp_path, git=True)
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    subprocess.run(["git", "init", "-q", str(other)], check=True)
+    # cwd in an unrelated repo: the gate still knows its own factory dir
+    r = run_main(json.dumps(bash(f"cd {wt} && git push", other)), root=root, cwd=other)
+    assert r.returncode == 0 and hso(json.loads(r.stdout))[0] == "deny"
+
+
+def test_long_command_skips_git_c_scope_quickly(env):
+    root, wt, policy = env["root"], env["wt"], env["policy"]
+    t0 = time.monotonic()
+    out = gate(bash("git " * 10000, root), root=root, policy=policy, headless=False,
+               decide=NoDecide())
+    assert out is None and time.monotonic() - t0 < 0.5
+    # over the bound, ``git -C`` is not detected: main session defers
+    cmd = f"git -C {wt} push " + "x" * 5000
+    assert gate(bash(cmd, root), root=root, policy=policy, headless=False,
+                decide=NoDecide()) is None
+    # a cd prefix is still detected on a long command
+    out = gate(bash(f"cd {wt} && git push " + "x" * 5000, root), root=root, policy=policy,
+               headless=False, decide=NoDecide())
+    assert hso(out)[0] == "deny"
+
+
+def test_notebookedit_prefers_notebook_path(env):
+    root, wt, policy = env["root"], env["wt"], env["policy"]
+    nb = {"cwd": str(root), "tool_name": "NotebookEdit",
+          "tool_input": {"notebook_path": str(wt / "n.ipynb"),
+                         "file_path": str(root / "elsewhere.ipynb"), "new_source": "x"}}
+    assert hso(gate(nb, root=root, policy=policy, headless=False,
+                    decide=NoDecide()))[0] == "allow"
+
+
+def fake_timeout(tmp_path, path_env):
+    """A ``timeout`` first on PATH that logs its argv, then runs the real one."""
+    d = tmp_path / "faketimeout"
+    d.mkdir()
+    log = tmp_path / "timeout-args"
+    t = d / "timeout"
+    t.write_text(f'#!/usr/bin/env bash\necho "$@" >> {log}\nexec {shutil.which("timeout")} "$@"\n')
+    t.chmod(0o755)
+    return f"{d}{os.pathsep}{path_env}", log
+
+
+def test_wrapper_uv_timeout_falls_back(tmp_path):
+    path = fake_uv(tmp_path, "sleep 30; echo late")
+    t0 = time.monotonic()
+    r = run_bin(GATE_BIN, "{}", cwd=tmp_path, headless=True, path_env=path,
+                extra={"FACTORY_TOOLGATE_TIMEOUT_S": "2"})
+    assert time.monotonic() - t0 < 10
+    assert gate_out(r) == ("deny", "needs human: factory tool-gate: gate failed (rc=124)")
+    r = run_bin(GATE_BIN, "{}", cwd=tmp_path, headless=False, path_env=path,
+                extra={"FACTORY_TOOLGATE_TIMEOUT_S": "2"})
+    assert gate_out(r) == ("ask", "factory tool-gate: gate failed (rc=124)")
+
+
+@pytest.mark.parametrize("override,want", [(None, "25"), ("100", "25"), ("25", "25"),
+                                           ("3", "3"), ("abc", "25"), ("0", "25"),
+                                           ("-5", "25"), ("1e9", "25")])
+def test_wrapper_timeout_override_only_shortens(tmp_path, override, want):
+    path, log = fake_timeout(tmp_path, fake_uv(tmp_path, "cat >/dev/null"))
+    extra = {} if override is None else {"FACTORY_TOOLGATE_TIMEOUT_S": override}
+    r = run_bin(GATE_BIN, "{}", cwd=tmp_path, headless=False, path_env=path, extra=extra)
+    assert r.returncode == 0
+    args = log.read_text().split()
+    assert args[:4] == ["-k", "2", want, "uv"], args
+
+
+def test_wrapper_without_timeout_binary_still_gates(tmp_path):
+    d = tmp_path / "minbin"
+    d.mkdir()
+    for tool in ("bash", "dirname", "readlink", "cat"):
+        (d / tool).symlink_to(shutil.which(tool))
+    (d / "uv").write_text("#!/usr/bin/env bash\nexit 3\n")
+    (d / "uv").chmod(0o755)
+    assert gate_out(run_bin(GATE_BIN, "{}", cwd=tmp_path, headless=True,
+                            path_env=str(d))) == (
+        "deny", "needs human: factory tool-gate: gate failed (rc=3)")
