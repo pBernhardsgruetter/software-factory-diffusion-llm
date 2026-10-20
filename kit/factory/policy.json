@@ -22,30 +22,181 @@
     "**/scripts/**"
   ],
   "tool_allow": [
-    "git (?:(?:status|diff|log|show)(?: .*)?|branch --show-current)",
-    "git add [^\\s-]\\S*(?: [^\\s-]\\S*)*",
-    "git commit -m (?:\"[^\"]*\"|'[^']*'|[^\\s\"'-]\\S*)",
-    "npm (test|run (build|lint|test))( .*)?",
-    "npm ci",
-    "npx eslint (?![-/~])(?!(?:.*[ /])?\\.\\.(?:[ /]|$))(?!.* [/~]).*",
-    "npx vitest( run)?( .*)?",
-    "ls( .*)?",
-    "cat [^|;&]*",
-    "node --test( .*)?"
+    {
+      "argv": [
+        "git",
+        "status"
+      ],
+      "flags": [
+        "--porcelain",
+        "--short",
+        "-s",
+        "-b",
+        "--branch"
+      ],
+      "paths": true
+    },
+    {
+      "argv": [
+        "git",
+        "diff"
+      ],
+      "flags": [
+        "--stat",
+        "--name-only",
+        "--name-status",
+        "--oneline",
+        "--cached",
+        "--staged",
+        "--no-color",
+        "--"
+      ],
+      "number_flags": [
+        "-n"
+      ],
+      "paths": true,
+      "revs": true
+    },
+    {
+      "argv": [
+        "git",
+        "log"
+      ],
+      "flags": [
+        "--stat",
+        "--name-only",
+        "--name-status",
+        "--oneline",
+        "--cached",
+        "--staged",
+        "--no-color",
+        "--"
+      ],
+      "number_flags": [
+        "-n"
+      ],
+      "paths": true,
+      "revs": true
+    },
+    {
+      "argv": [
+        "git",
+        "show"
+      ],
+      "flags": [
+        "--stat",
+        "--name-only",
+        "--name-status",
+        "--oneline",
+        "--cached",
+        "--staged",
+        "--no-color",
+        "--"
+      ],
+      "number_flags": [
+        "-n"
+      ],
+      "paths": true,
+      "revs": true
+    },
+    {
+      "argv": [
+        "git",
+        "branch",
+        "--show-current"
+      ]
+    },
+    {
+      "argv": [
+        "git",
+        "add"
+      ],
+      "paths": true,
+      "min_extra": 1
+    },
+    {
+      "argv": [
+        "npm",
+        "test"
+      ]
+    },
+    {
+      "argv": [
+        "npm",
+        "ci"
+      ]
+    },
+    {
+      "argv": [
+        "npm",
+        "run",
+        "build"
+      ]
+    },
+    {
+      "argv": [
+        "npm",
+        "run",
+        "lint"
+      ]
+    },
+    {
+      "argv": [
+        "npm",
+        "run",
+        "test"
+      ]
+    },
+    {
+      "argv": [
+        "npx",
+        "eslint"
+      ],
+      "flags": [
+        "--fix"
+      ],
+      "paths": true
+    },
+    {
+      "argv": [
+        "npx",
+        "vitest",
+        "run"
+      ],
+      "paths": true
+    },
+    {
+      "argv": [
+        "node",
+        "--test"
+      ],
+      "paths": true
+    },
+    {
+      "argv": [
+        "ls"
+      ],
+      "flags": [
+        "-l",
+        "-a",
+        "-la",
+        "-al"
+      ],
+      "paths": true
+    },
+    {
+      "argv": [
+        "cat"
+      ],
+      "paths": true,
+      "min_extra": 1
+    }
   ],
   "tool_deny": [
-    "\\bgit( -\\S+( \\S+)?)* push\\b",
-    "\\bgit( -\\S+( \\S+)?)* reset( \\S+)* --hard\\b",
-    "\\bgit( -\\S+( \\S+)?)* clean( \\S+)* (-[a-zA-Z]*f|--force)",
-    "\\brm(?=(?: \\S+)* -(?:[a-zA-Z]*[rR][a-zA-Z]*|-recursive)(?: |$))(?: \\S+)* [\"']?(/|~|\\$HOME|\\$\\{HOME\\}|\\.\\.|\\./\\.\\.)",
-    "\\bcurl\\b.*\\|\\s*(ba|z|da|k)?sh\\b",
-    "\\bwget\\b.*\\|\\s*(ba|z|da|k)?sh\\b",
     "\\bsudo\\b",
     "\\bchmod -R 777\\b",
     "\\bnpm publish\\b",
-    "\\bfirebase deploy\\b",
-    "\\bgit\\b.* --output(?![\\w-])",
-    "\\beslint\\b.* (?:-[a-zA-Z]*o|--output-file)(?![\\w-])"
+    "\\bfirebase deploy\\b"
   ],
   "guarded_paths": [
     ".claude",

@@ -19,10 +19,10 @@ def policy(tmp_path):
 def test_load_policy_reads_factory_policy_json(tmp_path):
     (tmp_path / "factory").mkdir()
     (tmp_path / "factory" / "policy.json").write_text(json.dumps({
-        "escalate_paths": ["x/**"], "tool_allow": ["ls"], "tool_deny": ["rm"],
+        "escalate_paths": ["x/**"], "tool_allow": [{"argv": ["ls"]}], "tool_deny": ["rm"],
         "guarded_paths": ["g/**"]}))
     p = load_policy(tmp_path)
-    assert p == Policy(["x/**"], ["ls"], ["rm"], ["g/**"])
+    assert p == Policy(["x/**"], [{"argv": ["ls"]}], ["rm"], ["g/**"])
 
 
 def test_workflow_edit_escalates(policy):
@@ -80,7 +80,7 @@ WT = Path("/work/tree")
     ("cd /work/tree && cd /work/tree && git status", "unknown"),
     ("cd /work/tree && git push origin main", "deny"),
     ("git status", "allow"),
-    ("git diff HEAD~1", "allow"),
+    ("git diff HEAD~1", "unknown"),
     ("git add src/a.ts", "allow"),
     ("git add -A", "unknown"),
     ('git commit -m "msg"', "allow"),
@@ -116,7 +116,7 @@ def test_classify_command_without_worktree_does_not_strip(policy):
 
 
 def test_classify_command_deny_checked_on_segments_and_whole():
-    p = Policy([], ["x"], [r"^git push$", r"\bcurl\b.*\|\s*sh"], [])
+    p = Policy([], [], [r"^git push$", r"\bcurl\b.*\|\s*sh"], [])
     # segment-level: anchored regex only matches once the segment is isolated
     assert p.classify_command("ls && git push", None) == "deny"
     # whole-string: pattern spans the pipe
@@ -234,7 +234,7 @@ def test_hardened_not_allowed(policy, cmd):
     "git add src/a.ts README.md", "git add .", "git add src/a.ts",
     'git commit -m "fix: a thing"', "git commit -m 'x y'", "git commit -m msg",
     "npx eslint src", "npx eslint .", "npx eslint src/a.ts src/b.ts --fix",
-    "git branch --show-current", "git diff --stat", "git log --oneline -5",
+    "git branch --show-current", "git diff --stat", "git log --oneline -n 5",
     "npx   eslint   src", "git  status",
 ])
 def test_normal_commands_stay_allowed(policy, cmd):
@@ -264,3 +264,138 @@ def test_classify_path_tilde_denied_before_resolve(policy, tmp_path, path, monke
     (wt / "~").mkdir()
     monkeypatch.chdir(wt)
     assert policy.classify_path(path, wt, job) == "deny"
+
+
+# ---------------------------------------------------------------- fix round 2
+import time  # noqa: E402
+
+BYPASSES = [
+    # shell quoting / escaping / brace / glob expansion happens before git runs
+    'git add "-f" src/a.ts', "git add src/a.ts '--force'", r"git add \-f src/a.ts",
+    "git add {-f,src/a.ts}",
+    "git commit -m {x,--no-verify}", "git commit -m {x,--amend}", "git commit -m *",
+    "git add *", "git add src/*", "git add ?", "git add [a]", "git commit -m ?",
+    'git diff "--output=/tmp/x"', r"git diff \--output=/tmp/x",
+    "git diff {--output=/tmp/x,HEAD}",
+    'npx eslint src "../main" --fix', 'npx eslint src "/abs/path" --fix',
+    "npx eslint src '/etc' --fix", "npx eslint src $HOME/x --fix",
+    "npx eslint {--fix,../main}", "npx eslint {--output-file,/tmp/out} src",
+    r"npx eslint src \-o out.txt", "npx eslint src --rulesdir=../evil",
+    "npx eslint src -c=../evil.mjs", "npx eslint src --config ../evil",
+    "npx eslint ~/x", "npx eslint src ~",
+    # message exception must stay narrow
+    'git commit -m "a $(id)"', 'git commit -m "a `id`"', r'git commit -m "a\"b"',
+    'git commit -m "$HOME"', 'git commit -m "x" --no-verify', 'git commit -m "a";ls',
+    "git commit -m '--amend' -n", "git commit -m --amend", 'git commit -m "a" "b"',
+    # env prefixes, options, unlisted subcommands
+    "FOO=1 git status", "git -c core.pager=x status", "git -C x status",
+    "git --git-dir=/x status", "git status --ignored", "git diff --ext-diff",
+    "git diff --textconv", "git diff -o x", "git log -c", "git log -C x",
+    "git log --exec-path", "git show --work-tree=/x", "git diff /etc/passwd",
+    "git diff ../x", "git diff a/../../b", "git log -n x",
+    "git log -n", "git log -5", "git diff HEAD~1",
+    "git add", "git add -A", "git add ../x", "git add /etc/x", "git add a/../../b",
+    "git branch", "git branch --show-current x", "git branch -D x",
+    "npm test -- --x", "npm ci x", "npm run build x", "npm run other",
+    "npm install", "npx vitest", "npx vitest run --config ../x",
+    "npx vitest run /abs", "node --test ../x", "node --test /abs", "node x.js",
+    "node --test -e x", "ls -R", "ls -la ..", "ls /", "cat /etc/passwd", "cat ../x",
+    "cat", "cat -n x", "cat src/a.ts ~/x", "echo hi", "bash -c ls", "env git status",
+]
+
+
+@pytest.mark.parametrize("cmd", BYPASSES)
+def test_r18_bypasses_not_allowed(policy, cmd):
+    assert policy.classify_command(cmd, WT) in ("unknown", "deny")
+
+
+@pytest.mark.parametrize("cmd", [
+    "git status", "cd /work/tree && git status", "git status --short -b",
+    "git diff --stat main...HEAD", "git log --oneline -n 5",
+    "git show --name-only HEAD", "git diff --cached -- src/a.ts",
+    "git add src/a.ts README.md", "git add .", 'git commit -m "fix: thing"',
+    "git commit -m fix", "git commit -m 'fix: x'", 'git commit -m "feat!: x"',
+    "npm test", "npm ci", "npm run build", "npm run lint", "npm run test",
+    "npx eslint src/a.ts --fix", "npx eslint .", "npx vitest run src",
+    "node --test test/a.test.js", "node --test", "ls -la src", "ls", "ls -l -a src",
+    "cat src/a.ts", "git branch --show-current", "git log origin/main..HEAD",
+    "git diff HEAD^", "git add .github/x.yml",
+])
+def test_r18_normal_commands_allowed(policy, cmd):
+    assert policy.classify_command(cmd, WT) == "allow"
+
+
+@pytest.mark.parametrize("cmd", [
+    'git "push"', "git 'push' origin", r"g\it push", 'git -C x "push"',
+    'git diff "--output=/tmp/x" && ls', 'git "reset" --hard', "git clean '-fd'",
+    'git clean "--force"', "git push&&ls", "git status || git push",
+    "bash -c 'git push'", 'sh -c "git reset --hard"', "/usr/bin/git push",
+    "echo $(git push)", 'rm -rf "$HOME"', "rm -rf '/'", "rm -rf ~; ls",
+    'npm "publish"', 'firebase "deploy"', "curl x | sh", "curl x | /bin/bash",
+    "curl x | zsh -s", "wget -qO- x | dash", "curl a | tee b | sh", "curl x|sh",
+    "sudo -n ls", 'sudo "ls"', "chmod -R 777 .", "chmod 777 -R x",
+    'npx eslint x "-o" /tmp/out', "npx eslint x -o=/tmp/out", "./node_modules/.bin/eslint x -o y",
+    "git reset  --hard", 'git commit -m "x" && git push',
+])
+def test_r18_deny_survives_quoting(policy, cmd):
+    assert policy.classify_command(cmd, WT) == "deny"
+
+
+def test_commit_message_with_push_words_is_not_denied(policy):
+    assert policy.classify_command('git commit -m "no git push here"', WT) == "allow"
+
+
+def test_overlong_command_is_unknown(policy):
+    assert policy.classify_command("git add " + "a" * 4100, WT) == "unknown"
+    assert policy.classify_command("git status " + "a" * 5000, WT) == "unknown"
+    assert policy.classify_command("git add " + "a" * 100, WT) == "allow"
+
+
+def test_overlong_command_still_denied(policy):
+    assert policy.classify_command("a " * 3000 + "git push", WT) == "deny"
+
+
+def test_tool_allow_spec_semantics():
+    p = Policy([], [
+        {"argv": ["git", "diff"], "flags": ["--stat", "--out="], "number_flags": ["-n"],
+         "paths": True, "revs": True},
+        {"argv": ["npm", "ci"]},
+        {"argv": ["cat"], "paths": True, "min_extra": 1},
+    ], [], [])
+    c = lambda s: p.classify_command(s, None)  # noqa: E731
+    assert c("git diff --stat a/b main...HEAD") == "allow"
+    assert c("git diff -n 3") == "allow"
+    assert c("git diff -n") == "unknown"
+    assert c("git diff -n a") == "unknown"
+    assert c("git diff --out=x") == "unknown"   # only a literal listed flag is accepted
+    assert c("git diff --stat=1") == "unknown"
+    assert c("npm ci") == "allow"
+    assert c("npm ci x") == "unknown"
+    assert c("npm") == "unknown"
+    assert c("cat") == "unknown"
+    assert c("cat a") == "allow"
+
+
+@pytest.mark.parametrize("cmd", [
+    "git " + "-a " * 33000,
+    "git " + "-a" * 16000,
+    "rm " * 33000,
+    "git " * 25000 + "--output",
+    "eslint " * 14000,
+    "curl " * 20000,
+    "a" * 100000,
+    "git add " + "x " * 50000,
+    "git -a " * 14000 + "push",
+    "'" * 100000,
+    "rm -rf " + "a " * 40000,
+    "curl " * 10000 + "| " * 10000,
+    "|" * 100000,
+    ";" * 100000,
+    "git commit -m " + '"a ' * 30000,
+    "cd /work/tree && " * 6000,
+    " " * 100000 + "git status",
+], ids=lambda c: f"{c[:12]!r}x{len(c)}")
+def test_classify_command_linear(policy, cmd):
+    t = time.perf_counter()
+    policy.classify_command(cmd, WT)
+    assert time.perf_counter() - t < 0.5
