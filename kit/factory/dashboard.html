@@ -331,6 +331,8 @@ const roundCache = new Map() // "<job>/<n>" -> verdicts of a finished round
 let openJobId = null
 let openPath = null
 let openText = null
+const TERMINAL = new Set(['merged'])
+const decisionCache = new Map() // job id -> decisions of a finished job
 const DEC = '@decisions' // pseudo path of the drawer's Decisions tab
 
 async function fetchText(url) {
@@ -442,7 +444,7 @@ function costLine(job) {
   const d = money(c.decide_usd)
   if (m !== null) parts.push(`mercury $${m}`)
   if (d !== null) parts.push(`decide $${d}`)
-  return parts.length ? `<div class="cost" title="opus/sonnet: ${esc(show(c.opus_sonnet))}">${parts.join(' · ')}</div>` : ''
+  return parts.length ? `<div class="cost"${c.opus_sonnet === undefined || c.opus_sonnet === null ? '' : ` title="opus/sonnet: ${esc(show(c.opus_sonnet))}"`}>${parts.join(' · ')}</div>` : ''
 }
 
 function escalations(job) {
@@ -484,6 +486,7 @@ function card(job, past) {
       ${dchips ? `<div class="dchips">${dchips}</div>` : ''}
       ${human ? escalations(job) : ''}
       ${costLine(job)}
+      ${job.decisionsError ? '<div class="cost">decisions unavailable</div>' : ''}
       ${human ? `<div class="hint">/factory approve ${esc(job.id)}<br>/factory rework ${esc(job.id)} …</div>` : ''}
     </button>`
 }
@@ -537,7 +540,19 @@ async function loadJobs() {
     .sort()
   return Promise.all(ids.map(async (id) => {
     const job = JSON.parse(await fetchText(`jobs/${id}/job.json`))
-    job.decisions = await loadDecisions(id)
+    // Finished jobs never change: fetch their decisions once (a 404 counts as empty) and reuse.
+    if (TERMINAL.has(job.stage) && decisionCache.has(id)) {
+      job.decisions = decisionCache.get(id)
+      return job
+    }
+    try {
+      job.decisions = await loadDecisions(id)
+      if (TERMINAL.has(job.stage)) decisionCache.set(id, job.decisions)
+    } catch {
+      // One job's unreadable decisions must not stop the whole board from updating.
+      job.decisions = []
+      job.decisionsError = true
+    }
     return job
   }))
 }
