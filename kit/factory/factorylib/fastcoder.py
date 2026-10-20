@@ -102,6 +102,41 @@ def sandbox_missing(role: str, harness: str, platform: str | None = None) -> lis
     return [b for b in ("bwrap", "socat") if shutil.which(b) is None]
 
 
+# Empty mount targets Claude Code's Linux sandbox creates in the cwd for the
+# paths it hides (bwrap needs an existing file to bind over). Left behind they
+# block ``git worktree remove`` and a ``git add -A`` would commit them.
+SANDBOX_STUBS = re.compile(
+    r"^(\.env(\..+)?|\.gitmodules|\.npmrc|\.yarnrc(\.yml)?|bunfig\.toml"
+    r"|yarn\.lock|pnpm-lock\.yaml|package-lock\.json|bun\.lockb?)$")
+
+
+def _untracked(worktree: Path) -> set[str] | None:
+    """Untracked top-level paths in ``worktree``, or None if git fails."""
+    try:
+        r = subprocess.run(["git", "-C", str(worktree), "ls-files", "--others", "-z"],
+                           capture_output=True, timeout=30, check=True)
+    except (subprocess.SubprocessError, OSError):
+        return None
+    return {p for p in r.stdout.decode(errors="replace").split("\0") if p}
+
+
+def _remove_sandbox_stubs(worktree: Path, before: set[str]) -> list[str]:
+    """Delete empty, newly untracked sandbox placeholder files; return their names."""
+    after = _untracked(worktree)
+    removed = []
+    for name in sorted((after or set()) - before):
+        p = worktree / name
+        if "/" in name or not SANDBOX_STUBS.match(name):
+            continue
+        try:
+            if p.is_file() and not p.is_symlink() and p.stat().st_size == 0:
+                p.unlink()
+                removed.append(name)
+        except OSError:
+            pass
+    return removed
+
+
 def tool_gate_path(root: Path) -> Path:
     return Path(root) / "factory" / "bin" / "tool-gate"
 
@@ -406,6 +441,7 @@ def _run(argv) -> int:
                         prompt=prompt, message=message)
 
     start_error = None
+    before = _untracked(job.worktree) if args.role in GATED_ROLES else None  # only Bash roles get the sandbox
     try:
         rc, stdout, timed_out = _run_child(cmd, cwd=job.worktree, env=child_env(cfg, root, key),
                                            timeout_s=float(fc["timeout_s"]))
@@ -415,6 +451,8 @@ def _run(argv) -> int:
     except OSError as exc:
         rc, stdout, timed_out = 127, "", False
         start_error = f"could not start child: {exc.strerror or exc}"
+    if before is not None:
+        _remove_sandbox_stubs(job.worktree, before)
     transcript = job.folder / f"fast-{args.role}-round-{args.round_n}.json"
     transcript.write_text(stdout)
 

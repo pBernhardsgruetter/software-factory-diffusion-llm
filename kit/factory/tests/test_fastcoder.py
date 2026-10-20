@@ -584,3 +584,18 @@ def test_sandbox_missing_only_for_bash_roles_on_linux(monkeypatch):
     assert fastcoder.sandbox_missing("fast-builder", "pi", "linux") == []
     monkeypatch.setattr(fastcoder.shutil, "which", lambda b: "/usr/bin/" + b)
     assert fastcoder.sandbox_missing("fast-builder", "claude-p", "linux") == []
+
+
+def test_sandbox_placeholders_are_removed_but_real_files_kept(env):
+    wt = env["wt"]
+    (wt / "keep.txt").write_text("")              # pre-existing untracked: kept
+    before = fastcoder._untracked(wt)
+    for n in (".env", ".npmrc", "yarn.lock", "bunfig.toml"):
+        (wt / n).write_text("")                   # sandbox stubs: removed
+    (wt / ".env.local").write_text("SECRET=1\n")  # non-empty: kept
+    (wt / "notes.md").write_text("")              # not a stub name: kept
+    removed = fastcoder._remove_sandbox_stubs(wt, before)
+    assert removed == [".env", ".npmrc", "bunfig.toml", "yarn.lock"]
+    for n in ("keep.txt", ".env.local", "notes.md"):
+        assert (wt / n).exists()
+    assert not (wt / ".env").exists()
