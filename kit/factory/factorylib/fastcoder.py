@@ -26,6 +26,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -87,6 +88,18 @@ def _fast(cfg: dict) -> dict:
     fc.setdefault("timeout_s", 1800)
     fc.setdefault("harness", "claude-p")
     return fc
+
+
+def sandbox_missing(role: str, harness: str, platform: str | None = None) -> list[str]:
+    """Linux binaries Claude Code's Bash sandbox needs that are not on PATH.
+
+    ``CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`` makes the claude child require its
+    sandbox; without these every Bash call fails. Only roles with Bash count.
+    """
+    platform = sys.platform if platform is None else platform
+    if harness != "claude-p" or role not in GATED_ROLES or not platform.startswith("linux"):
+        return []
+    return [b for b in ("bwrap", "socat") if shutil.which(b) is None]
 
 
 def tool_gate_path(root: Path) -> Path:
@@ -380,6 +393,12 @@ def _run(argv) -> int:
     if args.role in GATED_ROLES and not (gate.is_file() and os.access(gate, os.X_OK)):
         raise UsageError(f"tool-gate missing or not executable: {gate}")
     fc = _fast(cfg)
+    missing = sandbox_missing(args.role, fc["harness"])
+    if missing:
+        raise UsageError(
+            f"Claude Code's command sandbox needs {', '.join(missing)} on Linux "
+            "(CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 turns it on to keep the key out of "
+            f"the model's shell); install it, e.g. sudo apt install {' '.join(missing)}")
     prompt = (FAST_AGENTS / f"{args.role}.md").read_text()
     message = build_message(args.role, job, args.round_n, args.port, args.message)
     session_id = args.resume or str(uuid.uuid4())

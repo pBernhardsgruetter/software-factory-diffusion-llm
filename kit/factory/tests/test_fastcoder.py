@@ -90,6 +90,9 @@ def env(tmp_path, monkeypatch):
     stub = bindir / "claude"
     stub.write_text(STUB.format(python=sys.executable))
     stub.chmod(0o755)
+    for dep in ("socat", "bwrap"):  # the sandbox preflight sees them (subprocess tests too)
+        (bindir / dep).write_text("#!/bin/sh\nexit 0\n")
+        (bindir / dep).chmod(0o755)
     log = tmp_path / "stub.jsonl"
     monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setenv("STUB_LOG", str(log))
@@ -556,3 +559,28 @@ def test_child_uses_its_own_config_dir(tmp_path, monkeypatch):
     # stable across calls, so --resume finds the session
     assert fastcoder.child_env({"fast_coder": {"model": "m", "harness": "claude-p"}},
                                root, "k")["CLAUDE_CONFIG_DIR"] == str(cdir)
+
+
+@pytest.fixture(autouse=True)
+def _sandbox_deps_present(request, monkeypatch):
+    # Hermetic: the preflight must not depend on whether this machine has socat.
+    if "sandbox_missing" not in request.node.name:
+        monkeypatch.setattr(fastcoder, "sandbox_missing", lambda *a, **k: [])
+
+
+def test_sandbox_missing_blocks_bash_role_with_clear_error(env, capsys, monkeypatch):
+    monkeypatch.setattr(fastcoder.shutil, "which", lambda b: None if b == "socat" else "/usr/bin/" + b)
+    monkeypatch.setattr(fastcoder.sys, "platform", "linux")
+    code, _, err = run(capsys, "fast-builder", "--job", "001-x")
+    assert code == 2 and "socat" in err and calls(env) == []
+
+
+def test_sandbox_missing_only_for_bash_roles_on_linux(monkeypatch):
+    monkeypatch.setattr(fastcoder.shutil, "which", lambda b: None if b == "socat" else "/usr/bin/" + b)
+    assert fastcoder.sandbox_missing("fast-builder", "claude-p", "linux") == ["socat"]
+    assert fastcoder.sandbox_missing("fast-fixer", "claude-p", "linux") == ["socat"]
+    assert fastcoder.sandbox_missing("scout", "claude-p", "linux") == []
+    assert fastcoder.sandbox_missing("fast-builder", "claude-p", "darwin") == []
+    assert fastcoder.sandbox_missing("fast-builder", "pi", "linux") == []
+    monkeypatch.setattr(fastcoder.shutil, "which", lambda b: "/usr/bin/" + b)
+    assert fastcoder.sandbox_missing("fast-builder", "claude-p", "linux") == []

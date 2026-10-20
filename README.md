@@ -15,6 +15,10 @@ rules in `factory/policy.json` always win.
 - `node` >= 22
 - `git`
 - the `agent-browser` CLI
+- Linux: `bubblewrap` and `socat` (`sudo apt install bubblewrap socat`). The
+  Mercury 3 child runs with `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`, which turns on
+  Claude Code's command sandbox; without them every fast-tier Bash call fails,
+  so `fast-coder` refuses to start and the job is promoted to Opus.
 - `OPENROUTER_API_KEY` exported in the shell you start Claude Code from. Never
   commit it.
 - The target repo needs a `main` branch: every job branches from `main` and
