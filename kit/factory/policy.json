@@ -1,0 +1,49 @@
+{
+  "escalate_paths": [
+    "package.json",
+    "**/package.json",
+    "*lock*",
+    "**/*.lock",
+    ".github/**",
+    "**/migrations/**",
+    "**/auth/**",
+    "firestore.rules",
+    "storage.rules",
+    "**/*.tf",
+    "Dockerfile",
+    "vercel.json",
+    "netlify.toml",
+    "scripts/**"
+  ],
+  "tool_allow": [
+    "git (status|diff|log|show|branch --show-current)( .*)?",
+    "git add [^-].*",
+    "git commit -m .*",
+    "npm (test|run (build|lint|test))( .*)?",
+    "npm ci",
+    "npx eslint [^-].*",
+    "npx vitest( run)?( .*)?",
+    "ls( .*)?",
+    "cat [^|;&]*",
+    "node --test( .*)?"
+  ],
+  "tool_deny": [
+    "\\bgit push\\b",
+    "\\bgit reset --hard\\b",
+    "\\bgit clean -[a-z]*f",
+    "\\brm -rf? +(/|~|\\$HOME|\\.\\.)",
+    "\\bcurl\\b.*\\|\\s*(ba)?sh",
+    "\\bwget\\b.*\\|\\s*(ba)?sh",
+    "\\bsudo\\b",
+    "\\bchmod -R 777\\b",
+    "\\bnpm publish\\b",
+    "\\bfirebase deploy\\b"
+  ],
+  "guarded_paths": [
+    ".claude/**",
+    "factory/bin/**",
+    "factory/policy.json",
+    "factory/config.json",
+    "factory/factorylib/**"
+  ]
+}
