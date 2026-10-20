@@ -107,7 +107,7 @@ def sandbox_missing(role: str, harness: str, platform: str | None = None) -> lis
 # block ``git worktree remove`` and a ``git add -A`` would commit them.
 SANDBOX_STUBS = re.compile(
     r"^(\.env(\..+)?|\.gitmodules|\.npmrc|\.yarnrc(\.yml)?|bunfig\.toml"
-    r"|yarn\.lock|pnpm-lock\.yaml|package-lock\.json|bun\.lockb?)$")
+    r"|yarn\.lock|pnpm-lock\.yaml|package(-lock)?\.json|bun\.lockb?)$")
 
 
 def _untracked(worktree: Path) -> set[str] | None:
