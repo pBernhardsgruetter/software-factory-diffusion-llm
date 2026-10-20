@@ -23,6 +23,7 @@ and sometimes a port. Use those exact values everywhere below.
   `/home/u/app/factory/jobs/007-x/` gives `<factory>` = `/home/u/app/factory`,
   so the command is `/home/u/app/factory/bin/decide`. Run:
   `cd <worktree> && <factory>/bin/decide failure --job <id> --state-json '{"command":"<the command>","output_tail":"<last 20 lines of output>"}'`
+  `<id>` is the Job id from your first message.
   Escape `"` and `\` inside the JSON strings and leave out `'` characters. It prints JSON.
   Follow `apply.action`: `retry` = run the command once more; `fix` = fix the
   code; `blocked` = write `STATUS: BLOCKED` quoting the output. If decide

@@ -14,6 +14,9 @@ from factorylib.paths import load_job
 
 KIT = Path(__file__).resolve().parent.parent
 KEY = "sk-or-v1-test-not-real-0123456789"
+ROUTING_VARS = ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "ANTHROPIC_MODEL",
+                "ANTHROPIC_SMALL_FAST_MODEL", "CLAUDE_CODE_OAUTH_TOKEN",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL")
 
 # S2-shaped ``claude -p --output-format json`` result (run 1 values).
 S2_RESULT = {
@@ -36,6 +39,9 @@ S2_RESULT = {
 STUB = r'''#!{python}
 import json, os, sys, time
 log = os.environ["STUB_LOG"]
+if os.environ.get("STUB_PIDFILE"):
+    with open(os.environ["STUB_PIDFILE"], "w") as f:
+        f.write(str(os.getpid()))
 rec = {{"argv": sys.argv[1:], "env": dict(os.environ), "cwd": os.getcwd(),
        "stdin": sys.stdin.read()}}
 with open(log, "a") as f:
@@ -75,6 +81,10 @@ def env(tmp_path, monkeypatch):
         "id": "001-x", "feature": "add a dark mode toggle", "branch": "factory/001-x",
         "worktree": str(wt.resolve()),
     }))
+    gate = root / "factory" / "bin" / "tool-gate"
+    gate.parent.mkdir(parents=True)
+    gate.write_text("#!/bin/sh\nexit 0\n")
+    gate.chmod(0o755)
     bindir = tmp_path / "bin"
     bindir.mkdir()
     stub = bindir / "claude"
@@ -87,11 +97,13 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", KEY)
     for name in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY",
                  "ANTHROPIC_DEFAULT_HAIKU_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL",
-                 "FACTORY_HEADLESS", "STUB_SLEEP", "STUB_EXIT"):
+                 "FACTORY_HEADLESS", "STUB_SLEEP", "STUB_EXIT", "STUB_PIDFILE",
+                 "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB", *ROUTING_VARS):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.chdir(wt)
     return {"root": root.resolve(), "wt": wt.resolve(), "log": log,
-            "folder": folder.resolve(), "tmp": tmp_path}
+            "folder": folder.resolve(), "tmp": tmp_path, "gate": gate.resolve(),
+            "bindir": bindir}
 
 
 def run(capsys, *argv):
@@ -176,7 +188,7 @@ def test_settings_hook_points_to_main_root_toolgate(env, capsys):
     assert entry["matcher"] == "Bash|Edit|Write"
     (hook,) = entry["hooks"]
     gate = env["root"] / "factory" / "bin" / "tool-gate"
-    assert hook == {"type": "command", "command": shlex.quote(str(gate)), "timeout": 10}
+    assert hook == {"type": "command", "command": shlex.quote(str(gate)), "timeout": 30}
     # The hook is the main checkout's, not one under the worktree we ran from.
     assert str(env["wt"]) not in hook["command"]
 
@@ -255,7 +267,8 @@ def test_first_message_per_role(env, capsys):
     run(capsys, "fast-builder", "--job", "001-x", "--message", "Do the thing.")
     scout, builder, fixer, custom = (c["argv"][-1] for c in calls(env))
     folder, wt = env["folder"], env["wt"]
-    head = f"Job folder: {folder}/. Worktree: {wt}. Branch: factory/001-x."
+    head = (f"Job folder: {folder}/. Worktree: {wt}. Branch: factory/001-x. "
+            f"Job id: 001-x.")
     assert scout == f"{head}\nScout for this feature: add a dark mode toggle"
     assert builder == f"{head}\nBuild round 2. Port: 5174."
     assert fixer == f"{head}\nFix the findings listed in {folder}/round-4/fast-fix.md."
@@ -336,6 +349,8 @@ def test_usage_errors_exit_2(env, capsys):
     assert run(capsys, "scout")[0] == 2
     assert run(capsys, "scout", "--job", "../etc")[0] == 2
     assert run(capsys, "scout", "--job", "nope")[0] == 2
+    assert run(capsys, "fast-builder", "--job", "001-x", "--resume", "not-a-uuid")[0] == 2
+    assert run(capsys, "fast-builder", "--job", "001-x", "--resume", "--x")[0] == 2
     assert calls(env) == []
 
 
@@ -396,7 +411,8 @@ def test_prompts_exist_and_carry_rules():
         text = (d / f"{role}.md").read_text()
         assert "cd <worktree> && " in text and "absolute paths" in text.lower()
         assert "needs human:" in text and "STATUS: BLOCKED" in text
-        assert "bin/decide failure --job" in text and "apply.action" in text
+        assert "bin/decide failure --job <id>" in text and "apply.action" in text
+        assert "Job id" in text
         assert "build.md" in text
     assert "### Round" in (d / "fast-fixer.md").read_text()
     assert (d / "pi-tool-gate.ts").is_file()
@@ -430,3 +446,93 @@ def test_unstartable_child_prints_record(env, capsys, monkeypatch):
     rec = json.loads(out)
     assert code == 127 and rec["exit_code"] == 127
     assert rec["error"].startswith("could not start child")
+
+
+# --- fix round 1 -------------------------------------------------------------
+
+def test_builder_refuses_without_gate(env, capsys):
+    env["gate"].unlink()
+    for role in ("fast-builder", "fast-fixer"):
+        code, out, err = run(capsys, role, "--job", "001-x")
+        assert code == 2 and out == ""
+        assert f"tool-gate missing or not executable: {env['gate']}" in err
+    assert calls(env) == []
+
+
+def test_builder_refuses_non_executable_gate(env, capsys):
+    env["gate"].chmod(0o644)
+    code, out, err = run(capsys, "fast-builder", "--job", "001-x")
+    assert code == 2 and out == ""
+    assert "tool-gate missing or not executable" in err
+    assert calls(env) == []
+
+
+def test_scout_runs_without_gate(env, capsys):
+    env["gate"].unlink()
+    code, out, _ = run(capsys, "scout", "--job", "001-x")
+    assert code == 0 and json.loads(out)["error"] is None
+    assert len(calls(env)) == 1
+
+
+def test_claude_child_env_has_no_openrouter_key(env, capsys):
+    code, _, _ = run(capsys, "fast-builder", "--job", "001-x")
+    assert code == 0
+    (call,) = calls(env)
+    assert "OPENROUTER_API_KEY" not in call["env"]
+    assert call["env"]["ANTHROPIC_AUTH_TOKEN"] == KEY
+    assert os.environ["OPENROUTER_API_KEY"] == KEY  # parent untouched
+
+
+def test_claude_child_env_scrub_flag_and_no_routing_vars(env, capsys, monkeypatch):
+    for name in ROUTING_VARS:
+        monkeypatch.setenv(name, "inherited")
+    run(capsys, "fast-builder", "--job", "001-x")
+    (call,) = calls(env)
+    assert call["env"]["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"] == "1"
+    for name in ROUTING_VARS:
+        assert name not in call["env"], name
+        assert os.environ[name] == "inherited"
+
+
+def test_resume_valid_uuid_accepted(env, capsys):
+    sid = "0cc6b702-e60c-4ede-8311-339a3c6d763c"
+    code, out, _ = run(capsys, "fast-builder", "--job", "001-x", "--resume", sid)
+    assert code == 0
+    assert flag(calls(env)[0]["argv"], "--resume") == sid
+
+
+def _gone(pid):
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except FileNotFoundError:
+        return True
+    return stat.rsplit(")", 1)[1].split()[0] == "Z"
+
+
+def test_sigterm_kills_child_group(env):
+    import signal
+    pidfile = env["tmp"] / "stub.pid"
+    child_env = dict(os.environ, STUB_SLEEP="60", STUB_PIDFILE=str(pidfile),
+                     PYTHONPATH=str(KIT))
+    proc = subprocess.Popen([sys.executable, "-m", "factorylib.fastcoder", "fast-builder",
+                             "--job", "001-x"], cwd=env["wt"], env=child_env,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        deadline = time.monotonic() + 15
+        while not (pidfile.exists() and pidfile.read_text()):
+            assert time.monotonic() < deadline, "stub never started"
+            time.sleep(0.05)
+        stub_pid = int(pidfile.read_text())
+        proc.send_signal(signal.SIGTERM)
+        out, _ = proc.communicate(timeout=15)
+        deadline = time.monotonic() + 10
+        while not _gone(stub_pid):
+            assert time.monotonic() < deadline, "stub claude still alive after SIGTERM"
+            time.sleep(0.05)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+    assert proc.returncode == 143
+    rec = json.loads(out)
+    assert rec["error"] == "killed" and rec["exit_code"] == 143

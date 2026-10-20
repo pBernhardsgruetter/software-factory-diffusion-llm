@@ -41,7 +41,15 @@ FAST_AGENTS = Path(__file__).resolve().parent.parent / "fast-agents"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api"
 KEY_ENV = "OPENROUTER_API_KEY"
 TIMEOUT_EXIT = 124
+KILLED_EXIT = 143
 KILL_AFTER_S = 10
+HOOK_TIMEOUT_S = 30  # a cold ``uv run`` start of the gate can take several seconds
+REAP_WAIT_S = 5
+GATED_ROLES = ("fast-builder", "fast-fixer")
+# Inherited variables that would route the claude child away from OpenRouter.
+ROUTING_VARS = ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "ANTHROPIC_MODEL",
+                "ANTHROPIC_SMALL_FAST_MODEL", "CLAUDE_CODE_OAUTH_TOKEN",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL")
 
 _JOB_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
@@ -54,6 +62,10 @@ PI_TOOLS_DEFAULT = "read,bash,edit,write"
 
 class UsageError(Exception):
     """Exit 2 with this message on stderr."""
+
+
+class _Killed(Exception):
+    """fast-coder got SIGTERM/SIGINT/SIGHUP; the child group has been killed."""
 
 
 class _Parser(argparse.ArgumentParser):
@@ -78,13 +90,14 @@ def hook_settings(root: Path) -> str:
     command = shlex.quote(str(tool_gate_path(root)))
     return json.dumps({"hooks": {"PreToolUse": [{
         "matcher": "Bash|Edit|Write",
-        "hooks": [{"type": "command", "command": command, "timeout": 10}],
+        "hooks": [{"type": "command", "command": command, "timeout": HOOK_TIMEOUT_S}],
     }]}})
 
 
 def build_message(role: str, job: Job, round_n: int, port: int | None,
                   message: str | None) -> str:
-    head = f"Job folder: {job.folder}/. Worktree: {job.worktree}. Branch: {job.branch}."
+    head = (f"Job folder: {job.folder}/. Worktree: {job.worktree}. Branch: {job.branch}. "
+            f"Job id: {job.id}.")
     port_text = f" Port: {port}." if port is not None else ""
     if message is not None:
         body = message + port_text
@@ -129,7 +142,13 @@ def build_command(cfg: dict, root: Path, role: str, session_id: str, *, resume: 
 
 
 def child_env(cfg: dict, root: Path, key: str) -> dict:
-    """A copy of ``os.environ`` plus the child-only variables."""
+    """A copy of ``os.environ`` plus the child-only variables.
+
+    The claude child gets the key only as ``ANTHROPIC_AUTH_TOKEN`` and runs with
+    ``CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1``, so the model's Bash and the hooks
+    never see it; inherited provider-routing variables are dropped. pi needs
+    ``OPENROUTER_API_KEY`` itself.
+    """
     fc = _fast(cfg)
     env = dict(os.environ)
     env["FACTORY_HEADLESS"] = "1"
@@ -137,7 +156,11 @@ def child_env(cfg: dict, root: Path, key: str) -> dict:
     if fc["harness"] == "pi":
         env[KEY_ENV] = key
         return env
+    env.pop(KEY_ENV, None)
+    for name in ROUTING_VARS:
+        env.pop(name, None)
     env.update({
+        "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1",
         "ANTHROPIC_BASE_URL": OPENROUTER_BASE_URL,
         "ANTHROPIC_AUTH_TOKEN": key,
         "ANTHROPIC_API_KEY": "",
@@ -232,21 +255,66 @@ def _parse(harness: str, stdout: str) -> dict | None:
     return out if isinstance(out, dict) else None
 
 
+def _kill_group(proc: subprocess.Popen) -> None:
+    """SIGTERM the child's process group, then SIGKILL it after ``REAP_WAIT_S``."""
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(proc.pid, sig)
+        except ProcessLookupError:
+            return
+        try:
+            proc.wait(timeout=REAP_WAIT_S)
+            if sig == signal.SIGTERM:
+                # The leader is gone; still sweep stragglers left in the group.
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            return
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def _drain(proc: subprocess.Popen) -> str:
+    """Read what is left of stdout without blocking on a grandchild holding the pipe."""
+    try:
+        stdout, _ = proc.communicate(timeout=REAP_WAIT_S)
+        return stdout or ""
+    except (subprocess.TimeoutExpired, ValueError, OSError):
+        if proc.stdout:
+            proc.stdout.close()
+        return ""
+
+
 def _run_child(cmd: list[str], *, cwd: Path, env: dict, timeout_s: float):
-    """Return ``(exit_code, stdout, timed_out)``."""
+    """Return ``(exit_code, stdout, timed_out)``; raise ``_Killed`` on a signal."""
     start = time.monotonic()
     proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, text=True, start_new_session=True)
+
+    def on_signal(signum, frame):
+        _kill_group(proc)
+        raise _Killed()
+
+    sigs = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+    old = {s: signal.signal(s, on_signal) for s in sigs}
     try:
-        stdout, _ = proc.communicate(timeout=timeout_s + KILL_AFTER_S + 20)
-    except subprocess.TimeoutExpired:
-        # Backstop if ``timeout`` itself hangs: kill the whole process group.
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        stdout, _ = proc.communicate()
-        return TIMEOUT_EXIT, stdout or "", True
+            stdout, _ = proc.communicate(timeout=timeout_s + KILL_AFTER_S + 20)
+        except subprocess.TimeoutExpired:
+            # Backstop if ``timeout`` itself hangs: kill the whole process group.
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            return TIMEOUT_EXIT, _drain(proc), True
+        except _Killed:
+            if proc.stdout:
+                proc.stdout.close()
+            raise
+    finally:
+        for s, h in old.items():
+            signal.signal(s, h)
     rc = proc.returncode
     elapsed = time.monotonic() - start
     timed_out = rc == TIMEOUT_EXIT or (rc == 128 + signal.SIGKILL and elapsed >= timeout_s)
@@ -264,6 +332,11 @@ def _parse_args(argv):
     args = p.parse_args(argv)
     if not _JOB_ID.match(args.job):
         raise UsageError(f"bad job id {args.job!r}")
+    if args.resume is not None:
+        try:
+            uuid.UUID(args.resume)
+        except ValueError as exc:
+            raise UsageError(f"--resume: not a session uuid: {args.resume!r}") from exc
     if args.round_n < 1:
         raise UsageError("--round must be at least 1")
     return args
@@ -290,6 +363,9 @@ def _run(argv) -> int:
     key = os.environ.get(KEY_ENV, "")
     if not key:
         raise UsageError(f"{KEY_ENV} is not set; export it in the shell that runs the factory")
+    gate = tool_gate_path(root)
+    if args.role in GATED_ROLES and not (gate.is_file() and os.access(gate, os.X_OK)):
+        raise UsageError(f"tool-gate missing or not executable: {gate}")
     fc = _fast(cfg)
     prompt = (FAST_AGENTS / f"{args.role}.md").read_text()
     message = build_message(args.role, job, args.round_n, args.port, args.message)
@@ -301,6 +377,9 @@ def _run(argv) -> int:
     try:
         rc, stdout, timed_out = _run_child(cmd, cwd=job.worktree, env=child_env(cfg, root, key),
                                            timeout_s=float(fc["timeout_s"]))
+    except _Killed:
+        rc, stdout, timed_out = KILLED_EXIT, "", False
+        start_error = "killed"
     except OSError as exc:
         rc, stdout, timed_out = 127, "", False
         start_error = f"could not start child: {exc.strerror or exc}"
