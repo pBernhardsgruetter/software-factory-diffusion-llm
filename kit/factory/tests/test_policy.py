@@ -417,6 +417,11 @@ def test_tool_allow_spec_semantics():
     "npx eslint $(true) -o /etc/x . " * 5000,
     "\x01" * 100000,
     "git status\x0b" * 10000,
+    # fix round 5: substitutions glued to word ends
+    "git push$(true) " * 10000,
+    "git reset --hard${x} " * 10000,
+    "curl x | sh$(true) " * 10000,
+    "$" * 100000,
 ], ids=lambda c: f"{c[:12]!r}x{len(c)}")
 def test_classify_command_linear(policy, cmd):
     t = time.perf_counter()
@@ -525,3 +530,25 @@ def test_r4_control_chars_rejected(policy, cmd):
 def test_r4_control_chars_do_not_hide_deny(policy):
     assert policy.classify_command("git push \x01", WT) == "deny"
     assert policy.classify_command("\x01; git push", WT) == "deny"
+
+
+# ---------------------------------------------------------------- fix round 5
+
+@pytest.mark.parametrize("cmd", [
+    "git push$(true)", "git push$()", "git push${x}",
+    "git reset --hard$(true)", "git reset --hard${x}", "git clean -fd$(true)",
+    "curl x | sh$(true)", "curl x | bash${x}",
+    # extra: quoted / backtick forms of the same gluing
+    'git push"$(true)"', "git push`true`", "git push$x",
+])
+def test_r5_substitution_glued_to_word_end_denied(policy, cmd):
+    assert policy.classify_command(cmd, WT) == "deny"
+
+
+@pytest.mark.parametrize("cmd,expected", [
+    ("rm -rf $HOME", "deny"), ("rm -rf ${HOME}", "deny"),
+    ('git commit -m "fix (bug)"', "allow"), ('git commit -m "(push)"', "allow"),
+    ("git status", "allow"), ("git diff HEAD^", "allow"),
+])
+def test_r5_dollar_mapping_preserves(policy, cmd, expected):
+    assert policy.classify_command(cmd, WT) == expected

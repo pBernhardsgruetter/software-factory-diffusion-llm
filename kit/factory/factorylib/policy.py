@@ -39,8 +39,13 @@ _REV = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*\^*")
 #   reaches into ``-m`` messages).
 # - _SUBST_WS: delimiters become spaces, so the OUTER command stays whole
 #   (``git $(true) push``, ``rm -rf `echo ~```, ``curl x | (sh)``, ``{ sh; }``).
+#   ``$`` becomes a space too, so an expansion glued to a word end
+#   (``git push$(true)``, ``git reset --hard${x}``, ``sh$x``) leaves the bare
+#   word. Scan B keeps ``$``, so ``rm -rf $HOME`` / ``${HOME}`` still deny.
 _SUBST = str.maketrans({"`": ";", "(": ";", ")": ";"})
-_SUBST_WS = str.maketrans({"`": " ", "(": " ", ")": " ", "{": " ", "}": " "})
+_SUBST_WS = str.maketrans(
+    {"`": " ", "(": " ", ")": " ", "{": " ", "}": " ", "$": " "}
+)
 # Control characters (everything below 0x20 except TAB and LF, plus DEL). zsh
 # keeps them as literal word characters; they are never part of an allowed
 # command.
