@@ -928,3 +928,47 @@ def test_session_inside_job_worktree_uses_sibling_main(tmp_path):
                      headless=headless, pkg=lone / "factory")
         assert r.returncode == 0, r.stderr
         assert hso(json.loads(r.stdout))[0] == want
+
+
+# ------------------------------------------------------- final review (I3)
+
+
+@pytest.mark.parametrize("rel", ["round-1/review-security.md", "job.json", "decisions.jsonl",
+                                 "decision.md", "scout.md", "round-1/fast-fix.md",
+                                 "fast-fast-builder-round-1.json", "spec.md", "./x/../job.json"])
+@pytest.mark.parametrize("tool", ["Write", "Edit", "MultiEdit"])
+def test_i3_headless_job_folder_is_orchestrator_owned(env, rel, tool):
+    root, wt, policy = env["root"], env["wt"], env["policy"]
+    job = root / "factory" / "jobs" / "001-x"
+    perm, reason = hso(gate(edit(f"{job}/{rel}", wt, tool=tool), root=root, policy=policy,
+                            headless=True, decide=NoDecide()))
+    assert perm == "deny"
+    assert reason.startswith("needs human: factory tool-gate: job folder is orchestrator-owned")
+
+
+def test_i3_headless_build_md_allowed(env):
+    root, wt, policy = env["root"], env["wt"], env["policy"]
+    job = root / "factory" / "jobs" / "001-x"
+    for tool in ("Write", "Edit", "MultiEdit"):
+        perm, _ = hso(gate(edit(job / "build.md", wt, tool=tool), root=root, policy=policy,
+                           headless=True, decide=NoDecide()))
+        assert perm == "allow", tool
+
+
+def test_i3_headless_build_md_symlink_to_job_json_denied(env):
+    root, wt, policy = env["root"], env["wt"], env["policy"]
+    job = root / "factory" / "jobs" / "001-x"
+    (job / "job.json").write_text("{}")
+    (job / "build.md").symlink_to(job / "job.json")
+    perm, reason = hso(gate(edit(job / "build.md", wt, tool="Write"), root=root,
+                            policy=policy, headless=True, decide=NoDecide()))
+    assert perm == "deny" and "job folder is orchestrator-owned" in reason
+
+
+def test_i3_main_session_job_folder_unchanged(env):
+    root, wt, policy = env["root"], env["wt"], env["policy"]
+    job = root / "factory" / "jobs" / "001-x"
+    for p in (job / "round-1" / "review-security.md", job / "job.json", job / "build.md"):
+        for cwd in (root, wt):
+            assert gate(edit(p, cwd, tool="Write"), root=root, policy=policy,
+                        headless=False, decide=NoDecide()) is None

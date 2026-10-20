@@ -31,7 +31,8 @@ answer ``ask`` in the main session and ``deny`` (reason ``needs human: ...``)
 headless. Only stdlib is imported at module level; ``policy`` and
 ``run`` are imported lazily, so a broken sibling module still yields a decision.
 Headless, an ``unknown`` command is denied without calling Decide (R31): the
-child has no API key.
+child has no API key. Headless, the job folder is orchestrator-owned: a child may
+write only ``<job>/build.md`` there; any other job-folder path needs a human.
 """
 
 from __future__ import annotations
@@ -267,6 +268,30 @@ def _resolve(event, root: Path, headless: bool, roots: list[Path] | None = None)
 # --------------------------------------------------------------------- gate
 
 
+# The one job-folder file a headless child may write (``scout.md`` and the
+# transcripts are written by fast-coder itself, never by the child).
+CHILD_JOB_FILES = ("build.md",)
+
+
+def _orchestrator_owned(path: str, job_folder: Path) -> bool:
+    """``path`` resolves into the job folder but is not a file a child may write.
+
+    Fails closed: a path that cannot be resolved counts as orchestrator-owned.
+    ``~`` paths are left to the policy (which denies them).
+    """
+    if path.startswith("~"):
+        return False
+    try:
+        target = Path(path).resolve()
+        job = job_folder.resolve()
+    except (OSError, RuntimeError, ValueError):
+        return True
+    if not target.is_relative_to(job):
+        return False
+    # ``target`` is fully resolved: a symlinked build.md resolves elsewhere
+    return target not in [job / name for name in CHILD_JOB_FILES]
+
+
 def _d10_p(rec: dict) -> str:
     try:
         p = rec["answers"]["class"]["p"]
@@ -288,6 +313,8 @@ def _gate(event, root: Path, policy, headless: bool, decide, roots) -> dict | No
         if sc.problem is not None:
             return out("ask", f"{sc.problem} for {sc.tool}: {show}")
         job_folder = Path(root) / "factory" / "jobs" / sc.worktree.name
+        if headless and _orchestrator_owned(sc.pcmd, job_folder):
+            return out("ask", f"job folder is orchestrator-owned: {show}")
         verdict = policy.classify_path(sc.pcmd, sc.worktree, job_folder)
         if verdict == "deny":
             return out("deny", f"path outside the worktree: {show}")
