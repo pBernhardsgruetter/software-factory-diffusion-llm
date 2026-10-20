@@ -19,6 +19,8 @@
     --changes: #ffb86c;
     --human: #ff79c6;
     --merged: #bd93f9;
+    --fast: #5eead4;
+    --promoted: #fbbf24;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
   * { box-sizing: border-box; }
@@ -51,7 +53,7 @@
 
   /* Board */
   .board {
-    display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px;
+    display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 12px;
     padding: 20px 32px 40px; align-items: start;
   }
   .col { min-width: 0; }
@@ -59,8 +61,8 @@
     display: flex; align-items: center; gap: 8px; padding: 0 2px 10px;
     border-bottom: 1px solid var(--line); margin-bottom: 12px; position: relative;
   }
-  .col-head h2 { margin: 0; font-size: 13px; font-weight: 600; }
-  .col-head .who { font-size: 11px; color: var(--faint); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .col-head h2 { margin: 0; font-size: 13px; font-weight: 600; white-space: nowrap; flex: none; }
+  .col-head .who { min-width: 0; font-size: 11px; color: var(--faint); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .col-head .count {
     margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--muted);
   }
@@ -88,7 +90,9 @@
                 0 8px 24px -12px color-mix(in srgb, var(--human) 60%, transparent);
   }
   .card.merged { opacity: .72; }
-  .card-top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .card-top { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-bottom: 4px; }
+  .card-top .id { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .pulse { flex: none; }
   .num { font-family: var(--mono); font-size: 12px; color: var(--muted); }
   .card-top .num { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .pulse {
@@ -121,6 +125,33 @@
     background: color-mix(in srgb, var(--changes) 16%, transparent);
   }
   .chip.bad { border: 1px solid var(--human); color: var(--human); }
+  .chip.skipped { border-style: dashed; opacity: .55; text-decoration: line-through; }
+  .tier {
+    margin-left: auto; flex: none; font-family: var(--mono); font-size: 9.5px; font-weight: 600;
+    letter-spacing: .06em; text-transform: uppercase; padding: 1px 6px; border-radius: 4px;
+    border: 1px solid currentColor; color: var(--muted);
+  }
+  .tier.fast { color: var(--fast); background: color-mix(in srgb, var(--fast) 12%, transparent); }
+  .tier.heavy { color: var(--muted); }
+  .tier.promoted { color: var(--promoted); background: color-mix(in srgb, var(--promoted) 12%, transparent); }
+  .tier + .flag { margin-left: 0; }
+  .dchips { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 4px; }
+  .dchip {
+    font-family: var(--mono); font-size: 10px; line-height: 1.4; padding: 1px 5px;
+    border-radius: 4px; border: 1px solid transparent; cursor: help; white-space: nowrap;
+  }
+  .dchip.confident { color: var(--pass); background: color-mix(in srgb, var(--pass) 14%, transparent); }
+  .dchip.uncertain { color: var(--changes); background: color-mix(in srgb, var(--changes) 16%, transparent); }
+  .dchip.na { color: var(--faint); background: color-mix(in srgb, var(--faint) 14%, transparent); }
+  .dchip.shadow { background: transparent; border-color: currentColor; }
+  .dchip.err { border: 1px solid var(--human); color: var(--human); background: transparent; }
+  .esc { list-style: none; margin: 10px 0 0; padding: 8px 0 0; border-top: 1px solid var(--line); display: grid; gap: 4px; }
+  .esc li { font-size: 11px; line-height: 1.4; color: var(--text); overflow-wrap: anywhere; }
+  .esc .src {
+    font-family: var(--mono); font-size: 9.5px; font-weight: 600; letter-spacing: .06em;
+    text-transform: uppercase; color: var(--human); margin-right: 6px;
+  }
+  .cost { margin-top: 8px; font-family: var(--mono); font-size: 10.5px; color: var(--faint); overflow-wrap: anywhere; }
   .hint {
     margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line);
     font-family: var(--mono); font-size: 10.5px; color: var(--muted); line-height: 1.6;
@@ -174,6 +205,7 @@
 
   /* Rendered markdown */
   .md { max-width: 680px; line-height: 1.65; }
+  .md.wide { max-width: none; }
   .md h1, .md h2, .md h3, .md h4 { line-height: 1.3; margin: 1.6em 0 .5em; }
   .md h1 { font-size: 20px; } .md h2 { font-size: 15px; } .md h3 { font-size: 14px; color: var(--muted); }
   .md > :first-child { margin-top: 0; }
@@ -205,6 +237,17 @@
   .verdict.warn { color: var(--changes); background: color-mix(in srgb, var(--changes) 16%, transparent); }
   .verdict.stop { color: var(--human); background: color-mix(in srgb, var(--human) 16%, transparent); }
   .note { color: var(--faint); font-size: 13px; }
+  .dtable { font-size: 12px; }
+  .dtable th { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); font-weight: 600; white-space: nowrap; }
+  .dtable td { vertical-align: top; }
+  .dtable td.mono, .dtable .mono { font-family: var(--mono); font-size: 11.5px; }
+  .dtable .muted { color: var(--faint); }
+  .dtable tr.outcome td { color: var(--muted); background: color-mix(in srgb, var(--bg) 50%, transparent); }
+  .dtable .band { font-family: var(--mono); font-size: 11px; }
+  .dtable .band.confident { color: var(--pass); } .dtable .band.uncertain { color: var(--changes); }
+  .dtable .band.na, .dtable .band.outcome { color: var(--faint); }
+  .dtable .errmsg { color: var(--human); }
+  .file .n { margin-left: auto; font-size: 10px; color: var(--faint); }
 
   footer {
     padding: 0 32px 32px; font-family: var(--mono); font-size: 11px; color: var(--faint);
@@ -212,7 +255,7 @@
   }
 
   @media (max-width: 1100px) {
-    .board { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 28px; }
+    .board { grid-template-columns: repeat(4, minmax(0, 1fr)); row-gap: 28px; }
     .col-head::after { display: none; }
   }
   @media (max-width: 640px) {
@@ -230,6 +273,7 @@
     .file { width: auto; white-space: nowrap; }
     .file .rn { display: inline; white-space: pre; }
     .doc { padding: 18px 16px 48px; }
+    .file .n { margin-left: 6px; }
   }
 </style>
 </head>
@@ -266,14 +310,15 @@
 <script>
 const POLL_MS = 2000
 const STAGES = [
+  { key: 'triage', label: 'Triage', who: 'triage · decide' },
   { key: 'spec', label: 'Spec', who: 'spec-writer · opus' },
-  { key: 'build', label: 'Build', who: 'builder · opus' },
-  { key: 'review', label: 'Review', who: 'sec · ux · ui · code' },
+  { key: 'build', label: 'Build', who: 'builder · opus / mercury-3' },
+  { key: 'review', label: 'Review', who: 'reviewers' },
   { key: 'approve', label: 'Approve', who: 'approver · opus' },
   { key: 'merged', label: 'Merged', who: 'main', cls: 'merged-col' },
   { key: 'needs-human', label: 'Needs human', who: 'approve · rework', cls: 'human' },
 ]
-const LIVE = new Set(['spec', 'build', 'review', 'approve'])
+const LIVE = new Set(['triage', 'spec', 'build', 'review', 'approve'])
 const REVIEWERS = [['security', 'sec'], ['ux', 'ux'], ['ui', 'ui'], ['code', 'code']]
 
 const $ = (id) => document.getElementById(id)
@@ -286,6 +331,7 @@ const roundCache = new Map() // "<job>/<n>" -> verdicts of a finished round
 let openJobId = null
 let openPath = null
 let openText = null
+const DEC = '@decisions' // pseudo path of the drawer's Decisions tab
 
 async function fetchText(url) {
   const res = await fetch(url, { cache: 'no-store' })
@@ -294,6 +340,13 @@ async function fetchText(url) {
 }
 
 // ---- Board ---------------------------------------------------------------
+
+// reviewers_active (when present) lists the reviewers a job runs; the others are skipped.
+function isSkipped(job, k, short) {
+  if (!Array.isArray(job.reviewers_active)) return false
+  const names = job.reviewers_active.map((n) => String(n).replace(/^reviewer-/, ''))
+  return !names.includes(k) && !names.includes(short)
+}
 
 function verdictOf(text) {
   const m = text.split('\n')[0].trim().match(/^VERDICT:\s*(PASS|CHANGES)$/)
@@ -307,14 +360,15 @@ async function pastRounds(job) {
     const key = `${job.id}/${n}`
     if (!roundCache.has(key)) {
       const verdicts = {}
-      await Promise.all(REVIEWERS.map(async ([k]) => {
+      await Promise.all(REVIEWERS.map(async ([k, short]) => {
+        if (isSkipped(job, k, short)) { verdicts[k] = 'skipped'; return }
         try {
           verdicts[k] = verdictOf(await fetchText(`jobs/${job.id}/round-${n}/review-${k}.md`))
         } catch {
           verdicts[k] = 'missing'
         }
       }))
-      if (Object.values(verdicts).every((v) => v === 'PASS' || v === 'CHANGES')) {
+      if (Object.values(verdicts).every((v) => v === 'PASS' || v === 'CHANGES' || v === 'skipped')) {
         roundCache.set(key, verdicts)
       } else {
         rounds.push(verdicts)
@@ -326,33 +380,110 @@ async function pastRounds(job) {
   return rounds
 }
 
-function chips(n, verdicts, waiting) {
+function chips(n, verdicts, waiting, job) {
   const cells = REVIEWERS.map(([k, short]) => {
-    const v = verdicts[k]
-    const cls = v === 'PASS' || v === 'CHANGES' ? v : v === 'pending' ? (waiting ? 'wait' : '') : 'bad'
+    let v = verdicts[k]
+    if (v === undefined && isSkipped(job, k, short)) v = 'skipped'
+    const cls = v === 'PASS' || v === 'CHANGES' ? v
+      : v === 'skipped' ? 'skipped'
+      : v === 'pending' ? (waiting ? 'wait' : '') : 'bad'
     const label = v === 'missing' || v === 'invalid' ? `${short}?` : short
     return `<span class="chip ${cls}" title="${k}: ${esc(v)}">${label}</span>`
   }).join('')
   return `<div class="round"><span class="r">R${n}</span>${cells}</div>`
 }
 
+const money = (v) => (typeof v !== 'number' || !isFinite(v) ? null : v >= 0.01 || v === 0 ? v.toFixed(2) : v.toFixed(4))
+const show = (v) => (v === undefined || v === null ? '–' : typeof v === 'object' ? JSON.stringify(v) : String(v))
+
+// Decisions of a job, in file order; outcome and corrupt lines excluded.
+const decisionRecords = (job) => (job.decisions || []).filter((r) => r.kind === 'decision')
+
+function topP(r) {
+  const ps = Object.values(r.answers && typeof r.answers === 'object' ? r.answers : {})
+    .map((a) => (a && typeof a.p === 'number' ? a.p : null)).filter((p) => p !== null)
+  return ps.length ? Math.max(...ps) : null
+}
+
+// One chip per decision id (the latest record wins): D1 ✓0.93 / D9 ?0.61 / D1 –.
+function decisionChips(job) {
+  const latest = new Map()
+  const count = new Map()
+  for (const r of decisionRecords(job)) {
+    const id = String(r.id || r.decision || '?')
+    latest.set(id, r)
+    count.set(id, (count.get(id) || 0) + 1)
+  }
+  const ids = [...latest.keys()].sort((a, b) => (parseInt(a.slice(1)) || 0) - (parseInt(b.slice(1)) || 0) || a.localeCompare(b))
+  return ids.map((id) => {
+    const r = latest.get(id)
+    const band = r.band === 'confident' ? 'confident' : r.band === 'uncertain' ? 'uncertain' : 'na'
+    const p = topP(r)
+    const mark = band === 'confident' ? '✓' : band === 'uncertain' ? '?' : '–'
+    const label = band === 'na' ? `${id} –` : `${id} ${mark}${p === null ? '' : p.toFixed(2)}`
+    const shadow = r.mode === 'shadow'
+    const tip = [
+      `${r.decision || id} · ${r.mode || 'mode ?'} · band ${r.band || '?'}`,
+      `route: ${show(r.route)}`,
+      `apply: ${show(r.apply)}`,
+      r.model ? `model: ${r.model}${typeof r.latency_ms === 'number' ? ` · ${r.latency_ms} ms` : ''}` : '',
+      r.error ? `error: ${show(r.error)}` : '',
+      count.get(id) > 1 ? `${count.get(id)} records, latest shown` : '',
+    ].filter(Boolean).join('\n')
+    return `<span class="dchip ${band} ${shadow ? 'shadow' : ''} ${r.error ? 'err' : ''}" title="${esc(tip)}">${esc(label)}${r.error ? ' !' : ''}</span>`
+  }).join('')
+}
+
+function costLine(job) {
+  const c = job.cost
+  if (!c || typeof c !== 'object') return ''
+  const parts = []
+  const m = money(c.mercury3_usd)
+  const d = money(c.decide_usd)
+  if (m !== null) parts.push(`mercury $${m}`)
+  if (d !== null) parts.push(`decide $${d}`)
+  return parts.length ? `<div class="cost" title="opus/sonnet: ${esc(show(c.opus_sonnet))}">${parts.join(' · ')}</div>` : ''
+}
+
+function escalations(job) {
+  const list = Array.isArray(job.escalations) ? job.escalations : []
+  if (!list.length) return ''
+  return `<ul class="esc">${list.map((e) => {
+    const o = e && typeof e === 'object' ? e : { reason: e }
+    return `<li>${o.source ? `<span class="src">${esc(o.source)}</span> ` : ''}${esc(show(o.reason))}</li>`
+  }).join('')}</ul>`
+}
+
+function tierBadge(job) {
+  if (!['fast', 'heavy', 'promoted'].includes(job.tier)) return ''
+  const tip = job.fast_session_id ? ` title="fast session ${esc(job.fast_session_id)}"` : ''
+  return `<span class="tier ${job.tier}"${tip}>${job.tier}</span>`
+}
+
 function card(job, past) {
   const live = LIVE.has(job.stage)
   const human = job.stage === 'needs-human'
-  const rows = past.map((v, i) => chips(i + 1, v, false))
-  if (job.round > 0) rows.push(chips(job.round, job.reviews, job.stage === 'review'))
+  const rows = past.map((v, i) => chips(i + 1, v, false, job))
+  if (job.round > 0) rows.push(chips(job.round, job.reviews || {}, job.stage === 'review', job))
+  const dchips = decisionChips(job)
   const [num, ...slug] = job.id.split('-')
   return `
     <button class="card ${live ? 'live' : ''} ${human ? 'human' : ''} ${job.stage === 'merged' ? 'merged' : ''}"
             data-job="${esc(job.id)}">
       <div class="card-top">
-        ${live ? '<span class="pulse" aria-label="running"></span>' : ''}
-        <span class="num">${esc(num)} · ${esc(slug.join('-'))}</span>
+        <span class="id">
+          ${live ? '<span class="pulse" aria-label="running"></span>' : ''}
+          <span class="num">${esc(num)} · ${esc(slug.join('-'))}</span>
+        </span>
+        ${tierBadge(job)}
         ${human ? '<span class="flag">your call</span>' : ''}
       </div>
       <p class="feature">${esc(job.feature)}</p>
       <div class="branch">${esc(job.branch)}</div>
       ${rows.length ? `<div class="rounds">${rows.join('')}</div>` : ''}
+      ${dchips ? `<div class="dchips">${dchips}</div>` : ''}
+      ${human ? escalations(job) : ''}
+      ${costLine(job)}
       ${human ? `<div class="hint">/factory approve ${esc(job.id)}<br>/factory rework ${esc(job.id)} …</div>` : ''}
     </button>`
 }
@@ -369,7 +500,7 @@ async function render() {
   const html = STAGES.map((s) => `
     <section class="col ${s.cls || ''}">
       <div class="col-head">
-        <h2>${s.label}</h2><span class="who">${s.who}</span>
+        <h2>${s.label}</h2><span class="who" title="${esc(s.who)}">${s.who}</span>
         <span class="count">${byStage[s.key].length || ''}</span>
       </div>
       ${byStage[s.key].reverse().join('') || '<div class="empty">—</div>'}
@@ -404,7 +535,27 @@ async function loadJobs() {
     .filter((h) => h.endsWith('/'))
     .map((h) => h.slice(0, -1))
     .sort()
-  return Promise.all(ids.map(async (id) => JSON.parse(await fetchText(`jobs/${id}/job.json`))))
+  return Promise.all(ids.map(async (id) => {
+    const job = JSON.parse(await fetchText(`jobs/${id}/job.json`))
+    job.decisions = await loadDecisions(id)
+    return job
+  }))
+}
+
+// decisions.jsonl: one JSON object per line. A 404 is an empty list; corrupt lines are ignored.
+async function loadDecisions(id) {
+  const res = await fetch(`jobs/${id}/decisions.jsonl`, { cache: 'no-store' })
+  if (res.status === 404) return []
+  if (!res.ok) throw new Error(`jobs/${id}/decisions.jsonl: HTTP ${res.status}`)
+  const out = []
+  for (const line of (await res.text()).split('\n')) {
+    if (!line.trim()) continue
+    try {
+      const r = JSON.parse(line)
+      if (r && typeof r === 'object' && !Array.isArray(r)) out.push(r)
+    } catch { /* corrupt line */ }
+  }
+  return out
 }
 
 // ---- Drawer --------------------------------------------------------------
@@ -436,6 +587,48 @@ function sortFiles(files) {
   })
 }
 
+function when(ts) {
+  const n = typeof ts === 'number' ? (ts < 1e12 ? ts * 1000 : ts) : Date.parse(ts)
+  const d = new Date(n)
+  return isNaN(d) ? show(ts) : d.toLocaleTimeString([], { hour12: false })
+}
+
+function topAnswers(r) {
+  const a = r.answers && typeof r.answers === 'object' ? Object.entries(r.answers) : []
+  return a
+    .map(([q, v]) => ({ q, v: v && typeof v === 'object' ? v : { value: v } }))
+    .sort((x, y) => (y.v.p ?? -1) - (x.v.p ?? -1))
+    .slice(0, 3)
+    .map(({ q, v }) => `<div><span class="muted">${esc(q)}</span> <span class="mono">${esc(show(v.value))}</span>${
+      typeof v.p === 'number' ? ` <span class="muted">${v.p.toFixed(2)}${v.confident === false ? ' ?' : ''}</span>` : ''}</div>`)
+    .join('') || '<span class="muted">–</span>'
+}
+
+function decisionsTable(records) {
+  if (!records.length) return '<p class="note">No decisions recorded for this job.</p>'
+  const rows = records.map((r) => {
+    if (r.kind === 'outcome') {
+      const rest = Object.entries(r).filter(([k]) => !['kind', 'ts', 'decision', 'id'].includes(k))
+        .map(([k, v]) => `<span class="muted">${esc(k)}</span> <span class="mono">${esc(show(v))}</span>`).join(' · ')
+      return `<tr class="outcome"><td class="mono">${esc(when(r.ts))}</td>
+        <td class="mono">${esc(r.id || r.decision || '–')}</td><td><span class="band outcome">outcome</span></td>
+        <td>${rest || '<span class="muted">–</span>'}</td><td class="muted">–</td><td class="muted">–</td></tr>`
+    }
+    const band = r.band === 'confident' || r.band === 'uncertain' ? r.band : 'na'
+    const differs = r.route !== undefined && r.apply !== undefined && show(r.route) !== show(r.apply)
+    return `<tr>
+      <td class="mono">${esc(when(r.ts))}</td>
+      <td><span class="mono">${esc(r.id || '–')}</span> ${esc(r.decision || '')}${
+        r.error ? `<div class="errmsg">${esc(show(r.error))}</div>` : ''}</td>
+      <td><span class="band ${band}">${esc(r.band || '–')}</span></td>
+      <td>${topAnswers(r)}</td>
+      <td class="mono">${esc(show(r.apply))}${differs ? `<div class="muted">route ${esc(show(r.route))}</div>` : ''}</td>
+      <td class="mono" title="${esc(`${r.model || ''}${typeof r.latency_ms === 'number' ? ` · ${r.latency_ms} ms` : ''}`)}">${esc(r.mode || '–')}</td>
+    </tr>`
+  }).join('')
+  return `<table class="dtable"><thead><tr><th>Time</th><th>Decision</th><th>Band</th><th>Top answers</th><th>Apply</th><th>Mode</th></tr></thead><tbody>${rows}</tbody></table>`
+}
+
 function tone(first) {
   if (/^(VERDICT:\s*PASS|APPROVE|STATUS:\s*READY)$/.test(first)) return 'good'
   if (/^VERDICT:\s*CHANGES$/.test(first)) return 'warn'
@@ -448,16 +641,16 @@ const firstLines = new Map()
 async function refreshDrawer() {
   const job = jobs.find((j) => j.id === openJobId)
   if (!job) return
-  $('d-num').textContent = `${job.id} · ${job.stage}${job.round ? ` · round ${job.round}` : ''}`
+  $('d-num').textContent = `${job.id} · ${job.stage}${job.round ? ` · round ${job.round}` : ''}${job.tier ? ` · ${job.tier}` : ''}`
   $('d-title').textContent = job.feature
   $('d-branch').textContent = job.branch
 
   const base = `jobs/${job.id}/`
   const files = sortFiles(await listFiles(base))
-  if (!openPath || !files.includes(openPath)) openPath = files[0] || null
+  if (!openPath || (openPath !== DEC && !files.includes(openPath))) openPath = files[0] || DEC
 
   let text = null
-  if (openPath) {
+  if (openPath && openPath !== DEC) {
     text = await fetchText(base + openPath)
     firstLines.set(base + openPath, text.split('\n')[0].trim())
   }
@@ -478,10 +671,16 @@ async function refreshDrawer() {
     return `${head}<button class="file ${f === openPath ? 'on' : ''}" data-file="${esc(f)}">
       <span class="v ${t || ''}"></span>${name}</button>`
   }).join('') || '<div class="empty">No files yet.</div>'
+  const nDec = job.decisions ? job.decisions.length : 0
+  $('d-files').innerHTML += `<div class="group">Mercury</div>
+    <button class="file ${openPath === DEC ? 'on' : ''}" data-file="${DEC}">decisions${nDec ? `<span class="n">${nDec}</span>` : ''}</button>`
 
-  if (text !== openText) {
-    openText = text
-    $('d-doc').innerHTML = text === null ? '<p class="note">The spec-writer hasn’t written anything yet.</p>' : markdown(text)
+  const html = openPath === DEC ? decisionsTable(job.decisions || [])
+    : text === null ? '<p class="note">The spec-writer hasn’t written anything yet.</p>' : markdown(text)
+  if (html !== openText) {
+    openText = html
+    $('d-doc').classList.toggle('wide', openPath === DEC)
+    $('d-doc').innerHTML = html
   }
 }
 
