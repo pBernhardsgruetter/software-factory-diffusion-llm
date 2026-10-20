@@ -462,6 +462,7 @@ user the job is approved but the main checkout is busy; they run
 
 ```bash
 git merge --no-ff factory/<job-id> -m "Merge factory/<job-id>"
+factory/bin/fast-coder clean-stubs --job <job-id> 2>>factory/jobs/<job-id>/stderr.log
 git worktree remove <worktree>
 git branch -d factory/<job-id>
 ```
@@ -469,7 +470,9 @@ git branch -d factory/<job-id>
 Set `stage: "merged"`. If `decide stuck` ever ran for this job, record
 `factory/bin/decide outcome --job <job-id> --decision stuck --truth '{"escalate":<true when escalations has a rounds entry, else false>}' 2>>factory/jobs/<job-id>/stderr.log`.
 If the merge fails, run `git merge --abort` (when a merge is in progress), set
-`stage: "needs-human"` and tell the user why. If removing the worktree fails, the
+`stage: "needs-human"` and tell the user why. `clean-stubs` deletes the empty
+placeholder files (`.env*`, `.npmrc`, lockfiles, ...) Claude Code's command
+sandbox leaves in a cwd; never use `--force`. If removing the worktree fails, the
 job is still merged: tell the user what `git worktree remove` printed. Never push.
 
 ### Needs human

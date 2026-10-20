@@ -599,3 +599,14 @@ def test_sandbox_placeholders_are_removed_but_real_files_kept(env):
     for n in ("keep.txt", ".env.local", "notes.md"):
         assert (wt / n).exists()
     assert not (wt / ".env").exists()
+
+
+def test_clean_stubs_needs_no_key_and_removes_all_empty_stubs(env, capsys, monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    wt = env["wt"]
+    (wt / ".env").write_text("")
+    (wt / "pnpm-lock.yaml").write_text("")
+    (wt / ".env.local").write_text("X=1\n")
+    code, out, _ = run(capsys, "clean-stubs", "--job", "001-x")
+    assert code == 0 and json.loads(out) == {"removed": [".env", "pnpm-lock.yaml"]}
+    assert (wt / ".env.local").exists() and calls(env) == []

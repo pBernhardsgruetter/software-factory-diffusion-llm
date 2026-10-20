@@ -38,6 +38,7 @@ from .config import load_config
 from .paths import Job, find_root, load_job
 
 ROLES = ("scout", "fast-builder", "fast-fixer")
+CLEAN_STUBS = "clean-stubs"  # not a model role: tidy the worktree before removal
 FAST_AGENTS = Path(__file__).resolve().parent.parent / "fast-agents"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api"
 KEY_ENV = "OPENROUTER_API_KEY"
@@ -384,7 +385,7 @@ def _run_child(cmd: list[str], *, cwd: Path, env: dict, timeout_s: float):
 
 def _parse_args(argv):
     p = _Parser(prog="fast-coder", description="Run Mercury 3 headless for a factory job.")
-    p.add_argument("role", choices=ROLES)
+    p.add_argument("role", choices=(*ROLES, CLEAN_STUBS))
     p.add_argument("--job", required=True)
     p.add_argument("--round", type=int, default=1, dest="round_n")
     p.add_argument("--port", type=int)
@@ -417,6 +418,12 @@ def _run(argv) -> int:
         raise UsageError(f"bad job {args.job!r}: unreadable job.json ({exc})") from exc
     if not job.worktree.is_dir():
         raise UsageError(f"job {args.job!r}: worktree {job.worktree} does not exist")
+    if args.role == CLEAN_STUBS:
+        # Any sandboxed Bash (heavy agents too) leaves these in its cwd; the
+        # worktree is about to be removed, so every empty stub can go.
+        removed = _remove_sandbox_stubs(job.worktree, set())
+        print(json.dumps({"removed": removed}))
+        return 0
     try:
         cfg = load_config(root)
     except (ValueError, OSError) as exc:
