@@ -148,6 +148,36 @@ Decide cost $0.00 throughout: every call was served by the `:free` model.
 `decide report` after the four jobs: 0 unsafe misses; triage and escalation at
 75% agreement over 4 paired cases each, far from the 20-case `ready` bar.
 
+### Parallel run: four jobs at once
+
+Backlog items 005–008, started as four simultaneous `claude -p "/factory next"`
+sessions (one orchestrator per job, each in its own worktree). Contact page and
+Pricing page deliberately touched the same files (`main.ts`, router, header,
+`AGENTS.md`); slugify and the footer year were independent.
+
+| Job | Tier | Outcome | Human steps |
+|---|---|---|---|
+| 008 footer year | fast | merged first, 1 round, 151 s | 1 assumption |
+| 007 slugify | fast/heavy | merged, 1 + UX-only round | 1 assumption, 1 hand edit (`AGENTS.md` is a guarded path) |
+| 005 contact page | heavy | merged after 3 rounds, 2 merge conflicts | 4 assumptions, 1 hand-resolved conflict |
+| 006 pricing page | heavy | merged after a rework that merged `main` | 3 assumptions |
+
+- **Claiming works.** The four sessions took four different backlog items and
+  job ids; the dev-server ports and agent-browser sessions never collided.
+- **Conflicts are the real cost of parallelism.** The merge conflict was caught
+  by the approver every time (never merged wrong), but only after the full
+  review and approval, and `main` moved again during the rework (005 needed
+  two reworks). The skill now syncs the branch with `main` *before* the
+  approver and re-checks with `git merge-tree` right before the merge.
+- **Guarded paths stop jobs on purpose.** The builder cannot edit `AGENTS.md`;
+  the one-line edit needs a human.
+- **After merging in the main checkout, run `npm ci`** if a job added a
+  dependency; the merged tree failed type-check until `bcryptjs` was installed.
+- **D3 is chatty:** 4 of 4 jobs paused for assumption questions, most of them
+  trivial. Keep `assumptions` in shadow until it has data.
+- The final tree passes 52 tests, build and lint; `decide report` shows 0
+  unsafe misses over 8 triage / 8 paired escalation cases.
+
 What the runs showed:
 
 - **Escalation works as designed.** Job 003 escalated on two path rules
