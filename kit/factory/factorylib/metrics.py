@@ -177,8 +177,9 @@ def job_of(text: str) -> str | None:
     return c.most_common(1)[0][0] if c else None
 
 
-def collect(pdir: Path) -> tuple[list[dict], dict]:
-    """All sessions with their subagents, then the calibrated price table."""
+def collect(pdir: Path, also: list[Path] = ()) -> tuple[list[dict], dict]:
+    """All sessions with their subagents, then the calibrated price table. Sessions of
+    ``also`` (other project dirs) only widen the calibration sample."""
     sessions = []
     for main in sorted(pdir.glob("*.jsonl")):
         s = parse_file(main)
@@ -196,7 +197,8 @@ def collect(pdir: Path) -> tuple[list[dict], dict]:
         text = main.read_text(errors="replace")
         s["job"] = job_of(text)
         sessions.append(s)
-    return sessions, calibrate(sessions)
+    extra = [x for d in also for x in collect(d)[0]]
+    return sessions, calibrate(sessions + extra)
 
 
 def git_diff(root: Path, job: str) -> dict:
@@ -333,7 +335,7 @@ def render(jobs: list[dict], rates: dict) -> str:
          "| model | in | out | cache read | cache write | mean err | max err | sessions |", "|---|---|---|---|---|---|---|---|"]
     L += [f"| {m} | " + " | ".join(str(r["usd_per_mtok"][k]) for k in KEYS) + f" | {r['mean_rel_err']:.1%} | {r['max_rel_err']:.1%} | {r['sessions']} |"
           for m, r in sorted(rates.items())]
-    L[2] = "## Calibrated prices, USD per million tokens (fitted to Claude Code's own session costs)"
+    L[2] = "## Effective prices, USD per million tokens (fitted to Claude Code's own session costs; not list prices, only their sums are meaningful)"
     L += ["", "## Jobs", "",
           "| job | tier | kind | cx | crit | files s/t | +/- | rounds | esc | work s | human wait s | orch s | claude $ | mercury $ |",
           "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
@@ -390,12 +392,14 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="metrics", description=__doc__.split("\n")[0])
     p.add_argument("--root", type=Path, default=Path.cwd())
     p.add_argument("--claude-dir", type=Path)
+    p.add_argument("--also-root", type=Path, action="append", default=[],
+                   help="another repo whose sessions only widen the price calibration")
     p.add_argument("--job", action="append")
     p.add_argument("--json", action="store_true")
     p.add_argument("--out", type=Path, help="write <out>/<job>.json and report.md")
     a = p.parse_args(argv)
     root = a.root.resolve()
-    sessions, rates = collect(project_dir(root, a.claude_dir))
+    sessions, rates = collect(project_dir(root, a.claude_dir), [project_dir(r) for r in a.also_root])
     known = sorted(p.name for p in (root / "factory" / "jobs").glob("[0-9][0-9][0-9]-*") if p.is_dir())
     jobs = [measure_job(root, j, sessions, rates) for j in (a.job or known)]
     if a.out:
