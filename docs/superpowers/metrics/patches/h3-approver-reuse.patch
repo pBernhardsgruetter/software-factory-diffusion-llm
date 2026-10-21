@@ -1,0 +1,25 @@
+diff --git a/.claude/agents/approver.md b/.claude/agents/approver.md
+index 3d39c03..737a86c 100644
+--- a/.claude/agents/approver.md
++++ b/.claude/agents/approver.md
+@@ -29,6 +29,8 @@ not PASS on a check that did not run.
+ 
+ ## Read
+ 
++Issue every read below as parallel tool calls in ONE message, not one per turn.
++
+ 1. `AGENTS.md` (or `CLAUDE.md`).
+ 2. Everything in the job folder: `job.json` (its `reviewers_active` and
+    `reviews`), `spec.md`, `build.md`, any `rework-*.md`, `clarification.md` and
+@@ -60,6 +62,11 @@ hits in `decisions.jsonl`. APPROVE only if all of these hold:
+   round; it never excuses a newest review file that says `VERDICT: CHANGES`.
+ - `git merge-tree --write-tree main <branch>` reports no conflicts.
+ 
++Do not re-run tests, build or lint when `job.json` `review_commits.code` equals
++`git rev-parse <branch>`: reviewer-code ran them on exactly this commit and its
++review file says so. Run them yourself only when the commit differs (the branch
++moved after the review) or review-code.md does not report them.
++
+ ESCALATE if any of them fails, or if the change:
+ 
+ - touches money, access or identity: payments, auth, permissions, or database

@@ -1,0 +1,14 @@
+diff --git a/.claude/skills/factory/SKILL.md b/.claude/skills/factory/SKILL.md
+index 034fd73..ad2a788 100644
+--- a/.claude/skills/factory/SKILL.md
++++ b/.claude/skills/factory/SKILL.md
+@@ -343,6 +343,9 @@ Read the first line of `build.md`.
+ 
+ 1. Set `stage: "review"` and `round: N`. Create
+    `factory/jobs/<job-id>/round-<N>/`.
++   Before you pick reviewers, run the **Sync with main** procedure of the Approval
++   gate, so the reviewers see the code that will merge. A conflict goes to the
++   builder as a rework and this round starts again after it.
+ 2. Pick this round's reviewers:
+    - round 1: `reviewers_active`;
+    - a round the **Approval gate** started: the gate's list;

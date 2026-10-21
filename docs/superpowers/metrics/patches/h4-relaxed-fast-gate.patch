@@ -1,0 +1,14 @@
+diff --git a/factory/decisions/triage.json b/factory/decisions/triage.json
+index fd6913e..eacf6b3 100644
+--- a/factory/decisions/triage.json
++++ b/factory/decisions/triage.json
+@@ -83,5 +83,9 @@
+       "code"
+     ],
+     "risks": []
++  },
++  "route_params": {
++    "fast_max_complexity": 1.75,
++    "fast_needs_confident": false
+   }
+ }
