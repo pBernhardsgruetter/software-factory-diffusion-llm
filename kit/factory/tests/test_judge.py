@@ -25,9 +25,10 @@ def _repo(tmp_path, name, body):
 
 
 def test_gather_collects_request_criteria_and_merged_diff_only(tmp_path):
-    g = j.gather(_repo(tmp_path, "r", "feature\n"), "001-x")
+    g = j.gather(_repo(tmp_path, "r", "feature\n"), "001-x", use_spec=True)
     assert g["request"] == "add a faq page"
     assert g["criteria"] == "- shows faq"
+    assert j.gather(_repo(tmp_path, "r2", "feature\n"), "001-x")["criteria"] == ""  # neutral by default
     assert "+feature" in g["diff"] and "-base" in g["diff"]
 
 
@@ -47,7 +48,7 @@ def test_judge_job_prompt_has_no_factory_verdicts_and_counts_criteria(tmp_path):
     res = j.judge_job(root, "001-x", "m", run)
     assert (res["criteria_met"], res["criteria_total"], res["defects_high"]) == (1, 2, 1)
     prompt = run.seen[0]
-    assert "add a faq page" in prompt and "shows faq" in prompt
+    assert "add a faq page" in prompt and "shows faq" not in prompt  # the builder's spec stays out
     for forbidden in ("PASS", "APPROVE", "decision.md", "decisions.jsonl"):
         assert forbidden not in prompt.split("Answer with ONE JSON")[0]
 

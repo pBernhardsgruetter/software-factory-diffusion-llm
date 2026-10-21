@@ -26,10 +26,7 @@ JOB_PROMPT = """You are an independent code judge. Judge ONE finished change.
 
 Original request:
 {request}
-
-Specification the builder worked from (acceptance criteria):
-{criteria}
-
+{criteria_block}
 The merged diff:
 ```diff
 {diff}
@@ -50,8 +47,7 @@ PAIR_PROMPT = """You are an independent code judge. Two builders implemented the
 Request:
 {request}
 
-Acceptance criteria:
-{criteria}
+Judge both results against the request alone. Neither builder's own specification is given, because each was written for its own result; infer what the request reasonably requires.
 
 === Result X ===
 ```diff
@@ -72,12 +68,18 @@ def _git(root: Path, *args: str) -> str:
     return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, timeout=60).stdout
 
 
-def gather(root: Path, job: str) -> dict:
-    """Request, criteria and merged diff of one job; nothing from the factory's verdicts."""
+NO_SPEC = "\nDerive 4 to 8 acceptance criteria from the request alone first; list them under \"criteria\" and check each.\n"
+
+
+def gather(root: Path, job: str, use_spec: bool = False) -> dict:
+    """Request, merged diff and (opt-in) the builder's own criteria; never the factory's verdicts.
+    A build's own spec is written for that build, so it is not a fair yardstick across builds."""
     jd = root / "factory" / "jobs" / job
     request = json.loads((jd / "job.json").read_text()).get("feature", "")
     spec = (jd / "spec.md").read_text()
     criteria = spec.split("## Acceptance criteria", 1)[1].split("\n## ", 1)[0].strip() if "## Acceptance criteria" in spec else spec
+    if not use_spec:
+        criteria = ""
     sha = _git(root, "log", "--merges", "-1", "--format=%H", f"--grep=Merge factory/{job}").strip()
     diff = _git(root, "diff", f"{sha}^1", sha) if sha else ""
     if len(diff) > DIFF_CHARS:
@@ -114,9 +116,10 @@ def ask(prompt: str, cwd: Path, model: str, runner=None) -> tuple[dict | None, f
     return parse_json(env.get("result", "")), float(env.get("total_cost_usd") or 0.0)
 
 
-def judge_job(root: Path, job: str, model: str, runner=None) -> dict:
-    g = gather(root, job)
-    ans, cost = ask(JOB_PROMPT.format(**{k: g[k] for k in ("request", "criteria", "diff")}), root, model, runner)
+def judge_job(root: Path, job: str, model: str, runner=None, use_spec: bool = False) -> dict:
+    g = gather(root, job, use_spec)
+    block = f"\nThe builder's own acceptance criteria:\n{g['criteria']}\n" if g["criteria"] else NO_SPEC
+    ans, cost = ask(JOB_PROMPT.format(request=g["request"], criteria_block=block, diff=g["diff"]), root, model, runner)
     res = {"job": job, "model": model, "cost_usd": round(cost, 4), "merge": g["merge"], "answer": ans}
     if ans:
         c = ans.get("criteria") or []
@@ -131,7 +134,7 @@ def judge_pair(a: tuple[Path, str], b: tuple[Path, str], model: str, runner=None
     ga, gb = gather(*a), gather(*b)
     verdicts, cost = [], 0.0
     for first, second, label in ((ga, gb, "ab"), (gb, ga, "ba")):
-        p = PAIR_PROMPT.format(request=ga["request"], criteria=ga["criteria"], x=first["diff"], y=second["diff"])
+        p = PAIR_PROMPT.format(request=ga["request"], x=first["diff"], y=second["diff"])
         ans, c = ask(p, a[0], model, runner)
         cost += c
         w = (ans or {}).get("winner")
@@ -155,6 +158,7 @@ def main(argv=None) -> int:
     j.add_argument("--root", type=Path, default=Path.cwd())
     j.add_argument("--job", required=True)
     j.add_argument("--out", type=Path)
+    j.add_argument("--use-spec", action="store_true")
     q = sub.add_parser("pair")
     q.add_argument("--a", required=True, help="DIR:JOB")
     q.add_argument("--b", required=True, help="DIR:JOB")
@@ -162,7 +166,7 @@ def main(argv=None) -> int:
         s.add_argument("--model", default="claude-opus-5-5")
     a = p.parse_args(argv)
     if a.cmd == "job":
-        res = judge_job(a.root.resolve(), a.job, a.model)
+        res = judge_job(a.root.resolve(), a.job, a.model, use_spec=a.use_spec)
         if a.out:
             a.out.write_text(json.dumps(res, indent=1))
     else:

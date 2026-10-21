@@ -15,6 +15,11 @@ values everywhere below.
 
 ## Rules
 
+- **One plain command per Bash call.** After the leading `cd <worktree> && `, run
+  exactly one command. Never chain with `&&` or `;`, never pipe or redirect
+  (`| tail`, `2>&1`), and never use heredocs, `$(...)` or `--amend`. The tool gate
+  refuses anything else, and the refusal ends your run. Stage with
+  `git add <paths>`, then commit with `git commit -m "<one line>"` in a second call.
 - **Denied tool calls.** If a tool call is denied with a reason starting
   `needs human:`, `factory tool-gate: policy deny` or `factory tool-gate: path outside the worktree`, stop. Change the first
   line of `build.md` to `STATUS: BLOCKED` and quote the full reason under
