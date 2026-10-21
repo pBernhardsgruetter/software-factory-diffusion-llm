@@ -237,6 +237,16 @@ What the runs showed:
   The builder (66–248 s, $0.8–2.5) and spec writer dominate; routing more jobs
   to the fast tier is the bigger lever.
 
+## Metrics
+
+`factory/bin/metrics --root . --out factory/metrics` measures every job from
+data that is already on disk (Claude transcripts, `jobs/<id>/`, git): time per
+phase and actor, tokens, calibrated cost per model, human wait, orchestrator
+share, complexity (tier, triage score, acceptance criteria, files and lines
+changed) and Decide latency and confidence. See
+`docs/superpowers/metrics/2026-10-21-baseline.md` for the first baseline and the
+hypotheses it suggests.
+
 ## Docs
 
 - Specs: `docs/superpowers/specs/`
