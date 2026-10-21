@@ -425,7 +425,16 @@ Read the first line of `build.md`.
    stop: the approver still runs. If the call exits non-zero or prints no JSON
    object, use `{"escalate":true,"reasons":["decide escalation failed"]}` as
    `apply` (source `decide`).
-3. **Approver.** Spawn `approver` with the prompt
+3. **Sync with main.** Other jobs merge while this one is reviewed. If
+   `git rev-list --count factory/<job-id>..main` prints more than `0`, run
+   `cd <worktree> && git merge main -m "Merge main into factory/<job-id>"`. A clean
+   merge stays, and the approver re-runs the tests on it. On a conflict run
+   `cd <worktree> && git merge --abort` and treat it as a rework: resume the builder
+   with `Main moved. Merge main into the job branch, resolve every conflict keeping
+   both sides, re-run tests, build and lint, and update build.md.`, then start
+   another review round, which D5 may narrow. Never resolve a conflict yourself.
+   The approver is not spawned until the branch merges cleanly.
+4. **Approver.** Spawn `approver` with the prompt
    `<paths> Final round: N. Decide escalation: <apply, compact JSON>. Triage risks: <triage apply.risks, JSON>.`
    (If you no longer have the triage risks, take `apply.risks` from the latest
    triage record in `decisions.jsonl`.)
@@ -439,7 +448,7 @@ Read the first line of `build.md`.
    may be Decide's own forced verdict) and print
    `<job-id>: no independent verdict, escalation outcome skipped`. Always record
    `factory/bin/decide outcome --job <job-id> --decision triage --truth '{"risks":[<the ## Risks categories>]}' 2>>factory/jobs/<job-id>/stderr.log`.
-4. **Decision.**
+5. **Decision.**
    - `ESCALATE` and the independent verdict is `ESCALATE` (or missing):
      **escalate** with source `approver` and, as the reason, the
      first item under `## For the human` (the first sentence after the
@@ -459,7 +468,9 @@ The merge happens in the main checkout, so it must be clean and on `main`:
 `/factory next` edits it, and job branches never touch it, so a dirty backlog
 cannot conflict with the merge. If not, set `stage: "needs-human"` and tell the
 user the job is approved but the main checkout is busy; they run
-`/factory approve <job-id>` once it is clean. Otherwise:
+`/factory approve <job-id>` once it is clean. Otherwise, check once more that main did not move since the Approval gate's
+sync: `git merge-tree --write-tree main factory/<job-id>` must exit 0. If not,
+return to **Sync with main**. Then:
 
 ```bash
 git merge --no-ff factory/<job-id> -m "Merge factory/<job-id>"

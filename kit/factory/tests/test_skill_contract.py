@@ -142,3 +142,10 @@ def test_m5_spec_lists_are_flat_dash_bullets():
     assert parse_assumptions(spec) == ["Use the existing date helper: it is already imported.",
                                        "Keep the English copy: no i18n in the repo."]
     assert parse_assumptions("## Assumptions\n- None.\n") == []
+
+
+def test_skill_syncs_with_main_before_the_approver():
+    s = _skill()
+    assert "**Sync with main.**" in s
+    assert s.index("**Sync with main.**") < s.index("**Approver.**")
+    assert "git merge-tree --write-tree main factory/<job-id>" in s
