@@ -300,7 +300,7 @@ def run_decision(
     # force ``apply`` below, in every mode.
     ostate = {**state, "rule_hits": []} if name == "escalation" else state
     try:
-        route = ROUTES[name](banded, ostate)
+        route = ROUTES[name](banded, ostate, **(tpl.get("route_params") or {}))
     except Exception as exc:
         route, error = None, error or _err(exc)
 

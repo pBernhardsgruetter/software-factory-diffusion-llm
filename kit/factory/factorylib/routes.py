@@ -54,11 +54,11 @@ def _risks(banded: dict) -> list[str]:
     return [r for r in RISKS if _flagged(_get(banded, r))]
 
 
-def triage(banded, state):
+def triage(banded, state, fast_max_complexity=1.0, fast_needs_confident=True):
     c = _get(banded, "complexity", "score")
     risks = _risks(banded)
-    fast = (c.confident and isinstance(c.value, (int, float)) and c.value <= 1.0
-            and not risks)
+    fast = ((c.confident or not fast_needs_confident) and isinstance(c.value, (int, float))
+            and c.value <= fast_max_complexity and not risks)
     ui = _get(banded, "ui_change")
     reviewers = ["security"] + (["ux", "ui"] if _flagged(ui) else []) + ["code"]
     return {"tier": "fast" if fast else "heavy", "reviewers": reviewers, "risks": risks}

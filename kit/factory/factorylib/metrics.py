@@ -81,6 +81,7 @@ def parse_file(path: Path) -> dict:
     seen: dict[str, tuple[str, dict]] = {}
     stamps: list[float] = []
     first_prompt, calls, opened, cost_state, waits = "", [], {}, None, []
+    ctx: list[int] = []
     prev = None
     for d in _rows(path):
         t = ts(d["timestamp"]) if d.get("timestamp") else None
@@ -93,6 +94,8 @@ def parse_file(path: Path) -> dict:
             stamps.append(t)
         u = _usage(d)
         if u:
+            if (d.get("requestId") or d.get("uuid")) not in seen:
+                ctx.append(u[1]["in"] + u[1]["cr"] + u[1]["cw"])
             seen[d.get("requestId") or d.get("uuid")] = u
         msg = (d.get("message") or {}).get("content")
         for b in msg if isinstance(msg, list) else []:
@@ -116,7 +119,7 @@ def parse_file(path: Path) -> dict:
     for model, usage in seen.values():
         tokens[model].update(usage)
     return {"start": min(stamps, default=0.0), "end": max(stamps, default=0.0), "tokens": tokens,
-            "first_prompt": first_prompt, "calls": calls, "cost_state": cost_state, "waits": waits}
+            "first_prompt": first_prompt, "calls": calls, "cost_state": cost_state, "waits": waits, "ctx": ctx}
 
 
 def _solve(a: list[list[float]], b: list[float]) -> list[float]:
@@ -217,6 +220,16 @@ def git_diff(root: Path, job: str) -> dict:
     return {"files": files, "added": add, "deleted": dele}
 
 
+def _git_count(root: Path, job: str) -> int:
+    """Commits that merged main into the job branch (the sync step or a conflict rework)."""
+    sha = subprocess.run(["git", "-C", str(root), "log", "--merges", "-1", "--format=%H", f"--grep=Merge factory/{job}"],
+                         capture_output=True, text=True, timeout=30).stdout.strip()
+    if not sha:
+        return 0
+    log = subprocess.run(["git", "-C", str(root), "log", "--format=%s", f"{sha}^1..{sha}^2"], capture_output=True, text=True, timeout=30).stdout
+    return sum(1 for ln in log.splitlines() if ln.startswith(("Merge branch 'main'", "Merge main into")))
+
+
 def job_facts(root: Path, job: str) -> dict:
     jd = root / "factory" / "jobs" / job
     facts: dict = {"job": job}
@@ -261,6 +274,7 @@ def job_facts(root: Path, job: str) -> dict:
                      "tokens": {"in": (d.get("usage") or {}).get("input_tokens", 0), "out": (d.get("usage") or {}).get("output_tokens", 0)}})
     facts["fast"] = fast
     facts["diff"] = git_diff(root, job)
+    facts["sync_merges"] = _git_count(root, job)
     return facts
 
 
@@ -278,7 +292,9 @@ def phases_for(session: dict, job: str, rates: dict) -> list[dict]:
         tok = a["tokens"].get(model, Counter())
         out.append({"phase": phase, "actor": role, "model": model, "round": int(m.group(1)) if m else None,
                     "start": a["start"], "end": a["end"], "secs": round(a["end"] - a["start"], 1),
-                    "tokens": dict(tok), "cost_est": round(cost_of(tok, model, rates), 4)})
+                    "tokens": dict(tok), "cost_est": round(cost_of(tok, model, rates), 4),
+                    "turns": len(a["ctx"]), "reads": sum(1 for c in a["calls"] if c["tool"] in ("Read", "Grep", "Glob")),
+                    "test_runs": sum(1 for c in a["calls"] if re.search(r"npm (test|run (test|build))|vitest|eslint|tsc", (c["input"].get("command") or "")))})
     for c in session["calls"]:
         k = classify_call(c)
         if k and (JOB_RE.search(json.dumps(c["input"])) is None or job in json.dumps(c["input"])):
@@ -309,6 +325,7 @@ def measure_job(root: Path, job: str, sessions: list[dict], rates: dict) -> dict
     phases.sort(key=lambda p: p["start"])
     orch_tokens: dict[str, Counter] = defaultdict(Counter)
     wall = wait = 0.0
+    ctx = [c for s in mine for c in s["ctx"]]
     spans = [(p["start"], p["end"]) for p in phases]
     for s in mine:
         wall += s["end"] - s["start"]
@@ -320,7 +337,8 @@ def measure_job(root: Path, job: str, sessions: list[dict], rates: dict) -> dict
     by = defaultdict(float)
     for p in phases:
         by[p["phase"]] += p["secs"]
-    facts.update(phases=phases, wall_s=round(wall, 1), human_wait_s=round(wait, 1), work_s=round(work, 1),
+    facts.update(orch_turns=len(ctx), orch_ctx_first=ctx[0] if ctx else 0, orch_ctx_last=ctx[-1] if ctx else 0,
+                 orch_ctx_sum=sum(ctx), phases=phases, wall_s=round(wall, 1), human_wait_s=round(wait, 1), work_s=round(work, 1),
                  covered_s=round(busy, 1), orchestrator_s=round(max(work - busy, 0.0), 1),
                  phase_secs={k: round(v, 1) for k, v in sorted(by.items())},
                  orchestrator_cost=round(sum(cost_of(c, m, rates) for m, c in orch_tokens.items()), 4),
@@ -388,6 +406,34 @@ def render(jobs: list[dict], rates: dict) -> str:
     return "\n".join(L) + "\n"
 
 
+def compare(variants: dict[str, tuple[Path, list[str]]]) -> str:
+    """One row per variant (label -> repo root and optional job ids); all sessions pool the price calibration."""
+    pdirs = {k: project_dir(r) for k, (r, _) in variants.items()}
+    every = [x for d in pdirs.values() for x in collect(d)[0]]
+    rates = calibrate(every)
+    rows = []
+    for label, (root, only) in variants.items():
+        sessions, _ = collect(pdirs[label])
+        known = sorted(p.name for p in (root / "factory" / "jobs").glob("[0-9][0-9][0-9]-*") if p.is_dir() and (not only or p.name[:3] in only))
+        J = [measure_job(root, j, sessions, rates) for j in known]
+        ap = [p for j in J for p in j["phases"] if p["phase"] == "approve"]
+        n = len(J) or 1
+        mean = lambda xs: sum(xs) / len(xs) if xs else 0.0
+        rows.append([label, len(J), sum(j.get("stage") == "merged" for j in J), sum(j["cost_true"] for j in J),
+                     sum(j["orchestrator_cost"] for j in J), mean([j["orch_turns"] for j in J]),
+                     mean([j["orch_ctx_first"] for j in J]), mean([j["orch_ctx_sum"] for j in J]) / 1e6,
+                     sum(j["work_s"] for j in J), sum(j["orchestrator_s"] for j in J), sum(j.get("rounds") or 0 for j in J),
+                     sum(j.get("sync_merges") or 0 for j in J), sum(j.get("tier") in ("fast", "promoted") for j in J),
+                     sum(len(j.get("escalations") or []) for j in J), len(ap), mean([p["secs"] for p in ap]),
+                     mean([p.get("turns", 0) for p in ap]), mean([p.get("reads", 0) for p in ap]),
+                     mean([p.get("test_runs", 0) for p in ap]), sum(p["cost_est"] for p in ap) / n])
+    head = ("variant", "jobs", "merged", "claude $", "orch $", "orch turns", "ctx turn1", "ctx sum M", "work s", "orch s",
+            "rounds", "sync merges", "fast", "esc", "approve n", "approve s", "approve turns", "approve reads",
+            "approve tests", "approve $/job")
+    fmt = lambda v: f"{v:.2f}" if isinstance(v, float) else str(v)
+    return "\n".join(["| " + " | ".join(head) + " |", "|" + "---|" * len(head)] + ["| " + " | ".join(fmt(v) for v in r) + " |" for r in rows]) + "\n"
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="metrics", description=__doc__.split("\n")[0])
     p.add_argument("--root", type=Path, default=Path.cwd())
@@ -395,9 +441,14 @@ def main(argv=None) -> int:
     p.add_argument("--also-root", type=Path, action="append", default=[],
                    help="another repo whose sessions only widen the price calibration")
     p.add_argument("--job", action="append")
+    p.add_argument("--compare", action="append", default=[], metavar="LABEL=ROOT[@001,002]",
+                   help="side-by-side table of several repos; ignores --root")
     p.add_argument("--json", action="store_true")
     p.add_argument("--out", type=Path, help="write <out>/<job>.json and report.md")
     a = p.parse_args(argv)
+    if a.compare:
+        sys.stdout.write(compare({k: (Path(v.partition("@")[0]).resolve(), [x for x in v.partition("@")[2].split(",") if x]) for k, _, v in (c.partition("=") for c in a.compare)}))
+        return 0
     root = a.root.resolve()
     sessions, rates = collect(project_dir(root, a.claude_dir), [project_dir(r) for r in a.also_root])
     known = sorted(p.name for p in (root / "factory" / "jobs").glob("[0-9][0-9][0-9]-*") if p.is_dir())

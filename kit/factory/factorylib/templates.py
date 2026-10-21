@@ -58,6 +58,10 @@ def _validate(tpl, stem: str) -> str | None:
             return "per_item must be null or exactly {state_key: str, prefix: str, question: object}"
         if (problem := _check_question(per_item["question"], "per_item.question")):
             return f"per_item: {problem}"
+    rp = tpl.get("route_params")
+    if rp is not None and (not isinstance(rp, dict) or not all(isinstance(k, str) for k in rp)
+                           or (rp and stem != "triage")):
+        return "route_params must be null or an object, and only triage takes any"
     if not isinstance(tpl.get("fallback"), dict):
         return "fallback must be an object"
     return None

@@ -338,3 +338,13 @@ def test_every_route_returns_fresh_dict_and_never_raises_on_empty():
         b = fn({}, {})
         assert isinstance(a, dict)
         assert a == b and a is not b
+
+
+def test_triage_fast_gate_is_configurable_and_defaults_unchanged():
+    unsure_c = score(1.66, conf=False)
+    banded = triage_banded(complexity=unsure_c, ui=yes(), risks={})
+    assert ROUTES["triage"](banded, {})["tier"] == "heavy"
+    out = ROUTES["triage"](banded, {}, fast_max_complexity=1.75, fast_needs_confident=False)
+    assert out["tier"] == "fast"
+    risky = triage_banded(complexity=unsure_c, ui=yes(), risks={"auth": yes()})
+    assert ROUTES["triage"](risky, {}, fast_max_complexity=1.75, fast_needs_confident=False)["tier"] == "heavy"
