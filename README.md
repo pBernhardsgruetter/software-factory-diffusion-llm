@@ -237,6 +237,22 @@ What the runs showed:
   The builder (66–248 s, $0.8–2.5) and spec writer dominate; routing more jobs
   to the fast tier is the bigger lever.
 
+## Recommended orchestrator model
+
+Run `/factory` in a **Sonnet 5.5** session (`claude --model claude-sonnet-5-5`,
+or `/model claude-sonnet-5-5`). The orchestrator only routes, calls `decide` and
+`fast-coder`, and reads files; the heavy work stays on the Opus and Sonnet
+subagents named in their agent files. Measured on the same three jobs, this cut
+the Claude bill by 32% and the orchestrator's own cost by 57%, with the same
+review rounds and no quality difference we could detect. See
+`docs/superpowers/metrics/2026-10-21-baseline.md`.
+
+Not adopted: lean run flags (about $0.07 per job), the approver skipping a
+re-run (about $0.05 per job), a relaxed fast gate (no gain, the fast builder
+had to be promoted) and an early sync with main (promising, 6 to 4 review
+rounds, but only n = 3). Their patches are kept in
+`docs/superpowers/metrics/patches/` if you want to try them.
+
 ## Metrics
 
 `factory/bin/metrics --root . --out factory/metrics` measures every job from
