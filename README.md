@@ -178,6 +178,30 @@ Pricing page deliberately touched the same files (`main.ts`, router, header,
 - The final tree passes 52 tests, build and lint; `decide report` shows 0
   unsafe misses over 8 triage / 8 paired escalation cases.
 
+### Parallel run 2: does the sync step help?
+
+Three static pages (FAQ, Terms, Changelog), each changing the header, router and
+`main.ts`, started as three simultaneous sessions after the sync-with-main step
+was added.
+
+| Job | Rounds | Escalations | Wall clock (all phases) |
+|---|---|---|---|
+| 010 Terms | 1 | none | 305 s |
+| 009 FAQ | 2 | none | 511 s |
+| 011 Changelog | 3 | approver, once | 732 s + approval |
+
+- **Yes.** 009 hit a five-file conflict with the Terms merge; the builder
+  resolved it before the approver ran, one extra review round passed, and the
+  job merged with no human step. In the first parallel run the same kind of
+  conflict cost two escalations per job.
+- The one escalation (011) was my own instruction going stale: "keep the About
+  text at six pages" was false once two other jobs had merged. The approver
+  caught it and asked; a human said "eight". Spec text that hard-codes counts
+  of things other jobs change is a recurring conflict source.
+- All three static pages were triaged heavy (they are UI changes), so nothing
+  ran in the fast tier. Tuning D1 for trivial static pages is the open lever.
+- Final tree: 66 tests, build and lint pass.
+
 What the runs showed:
 
 - **Escalation works as designed.** Job 003 escalated on two path rules
